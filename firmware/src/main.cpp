@@ -6,8 +6,10 @@
 #include <atomic>
 #include <cmath>
 #include <esp_camera.h>
+#include <esp_heap_caps.h>
 #include <esp_system.h>
 #include <mbedtls/base64.h>
+#include <memory>
 
 #define TINY_GSM_MODEM_SIM7080
 #include <TinyGsmClient.h>
@@ -35,6 +37,19 @@ std::atomic<bool> parkingArmed{false};
 bool cameraReady = false;
 QueueHandle_t events;
 uint32_t bootId;
+
+class PsramAllocator : public ArduinoJson::Allocator {
+ public:
+  void *allocate(size_t size) override {
+    return heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  }
+  void deallocate(void *pointer) override { free(pointer); }
+  void *reallocate(void *pointer, size_t size) override {
+    return heap_caps_realloc(pointer, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  }
+};
+
+PsramAllocator imageAllocator;
 
 struct ParkingEvent {
   uint32_t sequence;
@@ -183,12 +198,12 @@ bool tlsSettings() {
   return client.setCertificate(MODEM_CA_FILE);
 }
 
-bool writeAll(const String &payload) {
+bool writeAll(const char *payload, size_t length) {
   size_t sent = 0;
-  while (sent < payload.length()) {
+  while (sent < length) {
     const size_t count = client.write(
-        reinterpret_cast<const uint8_t *>(payload.c_str()) + sent,
-        std::min(size_t(512), payload.length() - sent));
+        reinterpret_cast<const uint8_t *>(payload) + sent,
+        std::min(size_t(512), length - sent));
     if (!count) return false;
     sent += count;
   }
@@ -196,8 +211,10 @@ bool writeAll(const String &payload) {
 }
 
 bool post(const char *path, const JsonDocument &data, JsonDocument &response) {
-  String body;
-  serializeJson(data, body);
+  const size_t bodyLength = measureJson(data);
+  std::unique_ptr<char, decltype(&free)> body(
+      static_cast<char *>(ps_malloc(bodyLength + 1)), free);
+  if (!body || serializeJson(data, body.get(), bodyLength + 1) != bodyLength) return false;
   if (!tlsSettings() || !client.connect(SERVER_HOST, SERVER_PORT, 30)) {
     Serial.println("Verified TLS connection failed; upload deferred");
     return false;
@@ -205,8 +222,9 @@ bool post(const char *path, const JsonDocument &data, JsonDocument &response) {
   String headers = String("POST ") + path + " HTTP/1.1\r\nHost: " + SERVER_HOST +
                    "\r\nAuthorization: " + "Bearer" + " " + API_TOKEN +
                    "\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: " +
-                   body.length() + "\r\n\r\n";
-  bool success = writeAll(headers) && writeAll(body);
+                   bodyLength + "\r\n\r\n";
+  bool success = writeAll(headers.c_str(), headers.length()) && writeAll(body.get(), bodyLength);
+  body.reset();
   if (success) {
     client.setTimeout(15000);
     String status = client.readStringUntil('\n');
@@ -235,7 +253,7 @@ bool post(const char *path, const JsonDocument &data, JsonDocument &response) {
 }
 
 void uploadEvent(const ParkingEvent &event, bool &success) {
-  JsonDocument data;
+  JsonDocument data(&imageAllocator);
   data["vehicle"] = VEHICLE_ID;
   char id[32];
   snprintf(id, sizeof(id), "%08lx-%lu",

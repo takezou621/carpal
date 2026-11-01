@@ -2,11 +2,13 @@ import base64
 import http.client
 import json
 from pathlib import Path
+import socket
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
-from server import MAX_BODY, Store, make_server
+from server import Handler, MAX_BODY, Store, make_server
 
 
 class ApiTests(unittest.TestCase):
@@ -168,6 +170,30 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn(b"Carpal", body)
         self.assertIn("frame-ancestors 'none'", headers["Content-Security-Policy"])
+
+    def test_incomplete_and_timed_out_bodies_are_rejected(self):
+        original_setup = Handler.setup
+
+        def quick_timeout(handler):
+            original_setup(handler)
+            handler.connection.settimeout(0.1)
+
+        with patch.object(Handler, "setup", quick_timeout):
+            for close_write, expected in [(True, 400), (False, 408)]:
+                connection = http.client.HTTPConnection(
+                    "127.0.0.1", self.server.server_port, timeout=2)
+                connection.putrequest("POST", "/api/telemetry")
+                connection.putheader("Authorization", "Bearer " + self.token)
+                connection.putheader("Content-Type", "application/json")
+                connection.putheader("Content-Length", "20")
+                connection.endheaders(b"{}")
+                if close_write:
+                    connection.sock.shutdown(socket.SHUT_WR)
+                response = connection.getresponse()
+                self.assertEqual(response.status, expected)
+                response.read()
+                connection.close()
+        self.assertEqual(self.server.store.vehicles(), [])
 
     def test_event_list_is_bounded_and_isolated_by_vehicle(self):
         self.telemetry()

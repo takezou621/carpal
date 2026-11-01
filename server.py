@@ -230,7 +230,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.headers.get_content_type() != "application/json":
                 raise ValueError("Expected application/json")
-            data = json.loads(self.rfile.read(length))
+            body = self.rfile.read(length)
+            if len(body) != length:
+                raise ValueError("Incomplete request body")
+            data = json.loads(body)
             if not isinstance(data, dict):
                 raise ValueError("Expected an object")
             path = urlsplit(self.path).path
@@ -247,6 +250,8 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(400, {"error": str(exc)})
         except LookupError as exc:
             self.reply(404, {"error": str(exc)})
+        except TimeoutError:
+            self.reply(408, {"error": "Request body timeout"})
 
 
 def make_server(address, database, token):
