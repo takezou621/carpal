@@ -1,0 +1,32 @@
+# Secrets / credentials (絶対にコミットしない)
+docker/mosquitto/passwd
+*.pem
+*.key
+
+# Local env files (認証情報は環境変数で管理)
+.env*
+!.env.example
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Simulator logs
+web/simulator/*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Backups / dumps (ダンプと明示的に分かるパターンのみ除外。正規 SQL は追跡)
+*.dump
+*dump.sql
+*-backup.sql
+*.sql.gz
+mosquitto-data/
+
+# AI agent local settings
+.claude/settings.local.json
