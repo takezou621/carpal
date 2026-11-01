@@ -1,0 +1,16 @@
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: carpal-mosquitto
+    restart: unless-stopped
+    ports:
+      - "1883:1883"    # MQTT (ESP32 用)
+      - "9001:9001"    # MQTT over WebSockets (ブラウザ用)
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./passwd:/mosquitto/config/passwd:ro
+      - ./acl_file:/mosquitto/config/acl_file:ro
+      - mosquitto-data:/mosquitto/data
+
+volumes:
+  mosquitto-data:
