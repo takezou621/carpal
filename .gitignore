@@ -21,8 +21,12 @@ Thumbs.db
 .vscode/*
 !.vscode/extensions.json
 
-# Backups / dumps
+# Backups / dumps (ダンプと明示的に分かるパターンのみ除外。正規 SQL は追跡)
 *.dump
-*.sql
+*dump.sql
+*-backup.sql
 *.sql.gz
 mosquitto-data/
+
+# AI agent local settings
+.claude/settings.local.json
