@@ -1,0 +1,23 @@
+# Secrets / credentials (絶対にコミットしない — AGENTS.md §5)
+docker/mosquitto/passwd
+*.pem
+*.key
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Simulator logs
+web/simulator/*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Backups / dumps
+*.dump
+*.sql.gz
+mosquitto-data/
