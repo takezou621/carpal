@@ -1,0 +1,17 @@
+body { margin: 0; font: 16px system-ui, sans-serif; color: #17212b; }
+header, form { padding: 12px 20px; background: #eef3f7; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+h1 { margin: 0; font-size: 24px; }
+main { display: grid; grid-template-columns: 2fr 1fr; }
+#map { height: calc(100vh - 125px); min-height: 400px; }
+aside { padding: 16px; overflow-y: auto; max-height: calc(100vh - 157px); }
+button, input { padding: 8px; }
+button { cursor: pointer; }
+.vehicle, .event { padding: 12px; margin-bottom: 10px; border: 1px solid #bbc7d0; border-radius: 6px; }
+.selected { border: 2px solid #176ac4; }
+.stale { color: #9c4300; }
+.event img { max-width: 100%; display: block; margin-top: 8px; }
+@media (max-width: 700px) {
+  main { grid-template-columns: 1fr; }
+  #map { height: 50vh; min-height: 300px; }
+  aside { max-height: none; }
+}
