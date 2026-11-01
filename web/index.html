@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>carpal — リアルタイム車両追跡</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <!-- MQTT over WebSockets 用ライブラリ -->
+  <script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
+  <style>
+    html, body { margin: 0; height: 100%; }
+    #map { height: 100%; }
+    #info {
+      position: absolute; top: 10px; right: 10px; z-index: 1000;
+      background: rgba(255,255,255,.9); padding: 8px 12px; border-radius: 6px;
+      font: 13px/1.6 sans-serif; box-shadow: 0 1px 4px rgba(0,0,0,.3);
+    }
+    .car-icon { transition: transform .8s linear; } /* 回転をスムーズに */
+    .car-marker { display: flex; flex-direction: column; align-items: center; font: bold 11px sans-serif; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="info">接続中…</div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script type="module">
+    import { startVehicleSubscription } from './mqtt.js';
+
+    const MAX_VEHICLES = 3;
+    const STALE_MS = 60000; // この時間更新が無い車両はオフライン扱い
+
+    // ---------- 地図 ----------
+    const map = L.map('map').setView([35.6812, 139.7671], 13);
+    L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png', {
+      attribution: '<a href="https://maps.gsi.go.jp/development/ichiran.html">国土地理院</a>',
+      maxZoom: 18,
+    }).addTo(map);
+
+    const CAR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="34" height="34" viewBox="0 0 24 24">
+      <path d="M12 2 L19 22 L12 17 L5 22 Z" fill="#1565c0" stroke="#fff" stroke-width="1.5"/>
+    </svg>`;
+
+    const markers = {}; // id -> { marker, divIcon, lastTs, trail }
+
+    function ensureMarker(id) {
+      if (markers[id]) return markers[id];
+      const div = document.createElement('div');
+      div.className = 'car-marker';
+      div.innerHTML = `<span class="car-icon" style="width:34px;height:34px;display:block;">${CAR_SVG}</span><span>${id}</span>`;
+      const icon = L.divIcon({ html: div, className: '', iconSize: [34, 34], iconAnchor: [17, 17] });
+      const marker = L.marker([0, 0], { icon }).addTo(map);
+      const trail = L.polyline([], { color: '#1565c0', weight: 3, opacity: .5 }).addTo(map);
+      return (markers[id] = { marker, iconEl: div.querySelector('.car-icon'), trail, lastTs: 0 });
+    }
+
+    // ---------- MQTT 購読 ----------
+    startVehicleSubscription((id, d) => {
+      const m = ensureMarker(id);
+
+      if (!Number.isFinite(d.lat) || !Number.isFinite(d.lng)) return;
+
+      // 車両の移動をなめらかに見せる（CSS transition + 位置更新）
+      m.marker.setLatLng([d.lat, d.lng]);
+
+      // 進行方向へ回転。brg が無い場合は移動差分から計算（フォールバック）
+      let brg = d.bearing;
+      if (brg == null && m.lastLatLng) {
+        const prev = m.lastLatLng, cur = L.latLng(d.lat, d.lng);
+        if (prev.distanceTo(cur) > 2) {
+          brg = bearingDeg(prev.lat, prev.lng, cur.lat, cur.lng);
+        }
+      }
+      m.lastLatLng = L.latLng(d.lat, d.lng);
+      if (brg != null) m.iconEl.style.transform = `rotate(${brg}deg)`;
+
+      // 軌跡（直近100点）
+      m.trail.addLatLng([d.lat, d.lng]);
+      if (m.trail.getLatLngs().length > 100) m.trail.spliceLatLngs(0, 1);
+
+      m.lastTs = Date.now();
+      updateInfo();
+    }, (id, s) => {
+      // LWT/Retain status を即時反映 (監査 N-6 対策)
+      const m = ensureMarker(id);
+      m.lastTs = s.online ? Date.now() : 0;
+      updateInfo();
+    });
+
+    // ---------- 補助 ----------
+    function bearingDeg(lat1, lng1, lat2, lng2) {
+      const rad = Math.PI / 180;
+      const y = Math.sin((lng2 - lng1) * rad) * Math.cos(lat2 * rad);
+      const x = Math.cos(lat1 * rad) * Math.sin(lat2 * rad)
+              - Math.sin(lat1 * rad) * Math.cos(lat2 * rad) * Math.cos((lng2 - lng1) * rad);
+      return (Math.atan2(y, x) / rad + 360) % 360;
+    }
+
+    const info = document.getElementById('info');
+    function updateInfo() {
+      const now = Date.now();
+      const ids = Object.keys(markers).slice(0, MAX_VEHICLES);
+      info.innerHTML = ids.length
+        ? ids.map(id => {
+            const m = markers[id];
+            const online = now - m.lastTs < STALE_MS;
+            return `${id}: <span style="color:${online ? 'green' : 'red'}">●</span> ${online ? '走行中' : 'オフライン'}`;
+          }).join('<br>')
+        : '車両を待機中…';
+    }
+    setInterval(updateInfo, 5000);
+  </script>
+</body>
+</html>

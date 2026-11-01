@@ -1,0 +1,22 @@
+# Mosquitto ACL (Phase 1: 静的ACL)
+# 方針: デバイスは publish のみ、ブラウザは subscribe のみで分離する
+# 詳細: docs/multi-tenant-design.md §3.2 (go-auth 導入後は動的ACLへ置換)
+# 注意: MQTT の topic フィルタでは # は最終階層にのみ置けるため、
+#       中間ワイルドカードは + を使う
+# 限界: 静的ACLのためデバイスを追加するたびに本ファイルの更新が必要。
+#       Phase 2 (go-auth) で pattern ベースの動的ACLに置換する。
+
+# ---- デバイス: 自分のテナント/自分の topic へ publish のみ ----
+user car01
+topic write carpal/default/car01/#
+
+user car02
+topic write carpal/default/car02/#
+
+user car03
+topic write carpal/default/car03/#
+
+# ---- ブラウザ: subscribe のみ。publish は一切不可 ----
+user webuser
+topic read carpal/+/+/location
+topic read carpal/+/+/status
