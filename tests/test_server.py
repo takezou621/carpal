@@ -78,6 +78,11 @@ class ApiTests(unittest.TestCase):
         self.assertIsNone(vehicle["lat"])
         self.assertIsNone(vehicle["position_at"])
 
+    def test_slow_cellular_upload_keeps_actual_fix_age(self):
+        self.telemetry({"lat": 35, "lon": 139, "speed_kmh": 0, "age_seconds": 60})
+        vehicle = self.server.store.vehicles()[0]
+        self.assertAlmostEqual(vehicle["last_seen"] - vehicle["position_at"], 60)
+
     def test_coordinates_are_validated_atomically(self):
         for position in [
             {"lat": 91, "lon": 0, "speed_kmh": 0},
@@ -86,6 +91,8 @@ class ApiTests(unittest.TestCase):
             {"lat": 0, "lon": 0, "speed_kmh": -1},
             {"lat": float("nan"), "lon": 0, "speed_kmh": 0},
             {"lat": 0, "lon": 0, "speed_kmh": float("inf")},
+            {"lat": 10 ** 400, "lon": 0, "speed_kmh": 0},
+            {"lat": 0, "lon": 0, "speed_kmh": 0, "age_seconds": -1},
             [],
         ]:
             with self.subTest(position=position):
@@ -121,6 +128,12 @@ class ApiTests(unittest.TestCase):
         self.assertFalse(self.server.store.events("car-1")[0]["has_image"])
         self.assertEqual(self.request("GET", "/api/events/1/image")[0], 404)
 
+    def test_full_scale_vector_shock_is_accepted(self):
+        self.telemetry()
+        self.assertEqual(self.request("POST", "/api/events", {
+            "vehicle": "car-1", "event_id": "full-scale", "acceleration_g": 55.5
+        })[0], 200)
+
     def test_invalid_event_data(self):
         self.telemetry()
         for image in ["not base64!", base64.b64encode(b"not jpeg").decode(),
@@ -138,6 +151,8 @@ class ApiTests(unittest.TestCase):
     def test_invalid_requests(self):
         for raw in ["{", "[]", "null", '{"vehicle":"../car"}', '{"vehicle": 123}']:
             self.assertEqual(self.request("POST", "/api/telemetry", raw=raw)[0], 400)
+        self.assertEqual(self.request("POST", "/api/telemetry",
+                                      raw="[" * 2000 + "]" * 2000)[0], 400)
         self.assertEqual(self.request("POST", "/api/telemetry",
                                       raw="x" * (MAX_BODY + 1))[0], 413)
         self.assertEqual(self.request("POST", "/api/vehicles/missing/parking",

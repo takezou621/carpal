@@ -30,7 +30,7 @@ def identifier(value):
 
 def number(value, low, high):
     if (isinstance(value, bool) or not isinstance(value, (int, float))
-            or not math.isfinite(value) or not low <= value <= high):
+            or not low <= value <= high or not math.isfinite(value)):
         raise ValueError("Invalid numeric value")
     return value
 
@@ -74,6 +74,7 @@ class Store:
             lat = number(position.get("lat"), -90, 90)
             lon = number(position.get("lon"), -180, 180)
             speed = number(position.get("speed_kmh"), 0, 1000)
+            age = number(position.get("age_seconds", 0), 0, 3600)
         now = time.time()
         with self.connect() as db:
             db.execute("""
@@ -84,7 +85,7 @@ class Store:
                 db.execute("""
                     UPDATE vehicles SET lat=?, lon=?, speed=?, position_at=?
                     WHERE id=?
-                """, (lat, lon, speed, now, vehicle))
+                """, (lat, lon, speed, now - age, vehicle))
             armed = db.execute(
                 "SELECT parking_armed FROM vehicles WHERE id=?", (vehicle,)
             ).fetchone()[0]
@@ -93,7 +94,7 @@ class Store:
     def event(self, data):
         vehicle = identifier(data.get("vehicle"))
         event_id = identifier(data.get("event_id"))
-        acceleration = number(data.get("acceleration_g"), 0, 32)
+        acceleration = number(data.get("acceleration_g"), 0, 64)
         encoded = data.get("image_jpeg")
         image = None
         if encoded is not None:
@@ -175,7 +176,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Security-Policy",
                          "default-src 'self'; script-src 'self' https://unpkg.com; "
                          "style-src 'self' 'unsafe-inline' https://unpkg.com; "
-                         "img-src 'self' blob: data: https://tile.openstreetmap.org; "
+                         "img-src 'self' blob: data: https://tile.openstreetmap.org "
+                         "https://unpkg.com/leaflet@1.9.4/dist/images/; "
                          "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'")
         self.end_headers()
         self.wfile.write(body)
@@ -241,7 +243,7 @@ class Handler(BaseHTTPRequestHandler):
                     path.split("/")[3], data.get("parking_armed")))
             else:
                 self.reply(404, {"error": "Not found"})
-        except (ValueError, UnicodeError) as exc:
+        except (ValueError, UnicodeError, RecursionError) as exc:
             self.reply(400, {"error": str(exc)})
         except LookupError as exc:
             self.reply(404, {"error": str(exc)})
