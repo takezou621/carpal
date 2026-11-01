@@ -1,0 +1,82 @@
+# yaml-language-server: $schema=https://cubic.dev/schema/cubic-repository-config.schema.json
+# cubic (AI code review) 設定 — https://docs.cubic.dev/configure/cubic-yaml
+# 注意: cubic はデフォルトブランチ (main) の cubic.yaml のみを読む。
+#       このファイルが main にマージされた以降の PR から自動レビューが有効になる。
+
+version: 1
+
+reviews:
+  enabled: true
+  sensitivity: high
+  incremental_commits: true       # PR への追加コミットも自動レビュー
+  check_drafts: false
+  resolve_threads_when_addressed: true
+  architecture_diagrams: true
+
+  auto_approve_behavior: disabled
+  auto_approve: disabled
+
+  ultrareview: manual
+
+  custom_instructions: |
+    このリポジトリは LILYGO T-SIM7080-S3 を使ったリアルタイム車両追跡システム (carpal)。
+    開発ルールは AGENTS.md、設計書は docs/ 配下。読む優先順:
+    docs/contract.md > docs/multi-tenant-design.md > 各専門設計書。
+
+    レビュー時の重点:
+    1. 契約遵守: トピック形式 carpal/{tenant}/{device}/...、JSON スキーマ、
+       ts は epoch ms (millis() 使用は指摘)、受信側の id≡topic 検証 (docs/contract.md)
+    2. セキュリティ: 認証情報・シークレットのハードコード禁止
+       (window.CARPAL_* / 環境変数を使うこと)、MQTT ACL の緩和
+    3. テナント分離: topic 階層と ACL (docker/mosquitto/acl_file) の整合
+    4. 実装同期: contract.md 変更時は firmware / simulator / web / ingest を
+       片側だけ更新していないか
+    5. ドキュメント同期: 実装が docs/ と乖離していないか
+
+  ignore:
+    max_changed_lines: 5000
+
+  custom_rules:
+    - name: 契約 (docs/contract.md) の遵守
+      description: >
+        MQTT トピックは carpal/{tenant_id}/{device_id}/location|status 形式でなければならない。
+        location メッセージは id/lat/lng/spd を含み、ts は epoch ms (ミリ秒)。
+        受信側コードは payload.id と topic の device_id の一致検証、緯度経度の範囲チェック
+        (lat -90..90, lng -180..180, (0,0) 禁止) を実装すること。
+        docs/contract.md と実装の不一致はすべて指摘する。
+    - name: シークレット・認証情報のハードコード禁止
+      description: >
+        MQTT パスワード、API シークレット、実 IP アドレスをソースコードに直書きしてはならない。
+        ブラウザ側は window.CARPAL_MQTT_URL / CARPAL_MQTT_USER / CARPAL_MQTT_PASS /
+        CARPAL_TENANT_ID、Node 側は環境変数を使うこと。
+        docker/mosquitto/passwd はリポジトリにコミット禁止。
+    - name: MQTT ACL の保護
+      description: >
+        docker/mosquitto/acl_file の変更では、デバイスユーザー (car01-03) が
+        自テナントの自分の topic へ publish のみ、webuser が subscribe のみ、
+        という分離原則を維持しているか確認する。allow_anonymous true への変更や
+        publish 権限の追加は重大な問題として指摘する。
+    - name: ファームウェアの品質 (firmware/)
+      description: >
+        ESP32/Arduino コードでは、loop() 内のブロッキング処理、
+        millis() を時刻源とする実装 (49日周回問題)、接続リトライのバックオフ欠如、
+        GNSS 未測位時の (0,0) 送信を指摘する。
+    - name: ドキュメント同期
+      description: >
+        トピック/スキーマ変更が docs/contract.md に反映されているか、
+        進捗変更が docs/design.md §8 に反映されているか確認する。
+        実装と設計書の乖離は指摘する。
+
+pr_descriptions:
+  generate: true
+  skip_if_author_description: true
+
+issues:
+  fix_with_cubic_buttons: true
+  pr_comment_fixes: true
+  coding_agent_provider: cubic
+  auto_fix: on_demand
+  coding_agent_instructions: >
+    修正時は AGENTS.md のルールに従うこと。検証は ./scripts/check.sh が
+    グリーンになるまで実施する。docs/contract.md に抵触する変更は
+    contract.md を先に更新すること。
