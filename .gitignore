@@ -1,7 +1,11 @@
-# Secrets / credentials (絶対にコミットしない — AGENTS.md §5)
+# Secrets / credentials (絶対にコミットしない)
 docker/mosquitto/passwd
 *.pem
 *.key
+
+# Local env files (認証情報は環境変数で管理)
+.env*
+!.env.example
 
 # Node
 node_modules/
