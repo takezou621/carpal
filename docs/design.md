@@ -201,8 +201,8 @@ carpal/
 | 1-d | MQTT 購読モジュール + デモ統合 | ✅ 完了 (要 WSS 接続テスト) |
 | 1-e | シミュレータ | ✅ 完了 (status Retain発報・SIGINTオフライン含む) |
 | 1-f | マルチテナント化 (トピック新形式, ACL, 認証情報の外部化) | ✅ 完了 |
-| 2-a | Mosquitto 実機セットアップ + シミュレータ→ブラウザ E2E | 🔜 次 |
-| 2-b | バックエンド基盤 (PostgreSQL + API + ingest + Caddy) | 未着手 (multi-tenant §8) |
+| 2-a | Mosquitto セットアップ + シミュレータ→ブラウザ E2E | ✅ 完了 (2026-11-02: ACL拒否テスト・WS購読込み。ブラウザ描画は目視確認待ち) |
+| 2-b | バックエンド基盤 (PostgreSQL + API + ingest + Caddy) | 🔜 次 (multi-tenant §8 / backend-design) |
 | 2-c | テナント/デバイス管理 API・JWT 認証・go-auth | 未着手 |
 | 2-d | フロント UI (ログイン・テナントスイッチャー・ui-design M1〜M3) | 未着手 |
 | 2-e | ESP32 実機ファーム検証（デバイス到着後） | 未着手 (ボード未入手) |

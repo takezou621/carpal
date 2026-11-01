@@ -28,5 +28,8 @@ Thumbs.db
 *.sql.gz
 mosquitto-data/
 
+# ローカル設定 (MQTT 認証情報を含む — コミット禁止)
+web/config.local.js
+
 # AI agent local settings
 .claude/settings.local.json

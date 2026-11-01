@@ -35,11 +35,16 @@ if (vehicles.length === 0) {
   process.exit(1);
 }
 
+// clientId はプロセス間で衝突しないよう pid を含める
+// (Date.now() のみだと同一ミリ秒起動で衝突し "session taken over" が無限ループする)
 const client = mqtt.connect(MQTT_URL, {
   username: MQTT_USER,
   password: MQTT_PASS,
-  clientId: 'simulator-' + Date.now(),
+  clientId: `simulator-${DEVICE_IDS.join('-')}-${process.pid}-${Date.now()}`,
 });
+
+// interval の多重登録防止 (再接続で 'connect' が再発火しても1つだけにする)
+let timerStarted = false;
 
 client.on('connect', () => {
   console.log(`[sim] connected to ${MQTT_URL}`);
@@ -51,7 +56,10 @@ client.on('connect', () => {
       { retain: true, qos: 1 },
     );
   }
-  setInterval(tick, INTERVAL_MS);
+  if (!timerStarted) {
+    timerStarted = true;
+    setInterval(tick, INTERVAL_MS);
+  }
 });
 
 // 終了時にオフラインを発報 (LWT の動作を模擬)
