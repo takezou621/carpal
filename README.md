@@ -119,7 +119,7 @@ CA 登録には、メーカーの手順に従って `AT+CFSINIT`、
 [公式の証明書登録例](https://github.com/Xinyuan-LilyGO/LilyGo-T-SIM7080G/blob/39f7886a9436c8a460eb50c86e2d6c8e21de9b1e/examples/ModemMqttsAuthExample/ModemMqttsAuthExample.ino)
 も参照してください。例示されている証明書・秘密鍵は使用しないでください。
 
-ファームウェアは `AT+CASSLCFG=0,"crindex",0` で TLS コンテキストを指定し、
+ファームウェアは `AT+CSSLCFG="authmode",0,1` でサーバー認証を要求し、
 `AT+CSSLCFG="ignorertctime",0,0` による日付検証を要求します。
 TinyGSM の `setCertificate()` で CA を指定し、接続時の CA 設定失敗は接続を拒否します。
 これらを受け付けないモデム、未登録 CA、期限切れ・不一致の証明書の場合は送信しません。

@@ -190,8 +190,8 @@ void monitorParking(void *) {
 }
 
 bool tlsSettings() {
-  // Bind the CA to this TLS context and never ignore certificate dates.
-  modem.sendAT("+CASSLCFG=0,\"crindex\",0");
+  // Require server authentication in addition to binding a CA certificate.
+  modem.sendAT("+CSSLCFG=\"authmode\",0,1");
   if (modem.waitResponse(5000L) != 1) return false;
   modem.sendAT("+CSSLCFG=\"ignorertctime\",0,0");
   if (modem.waitResponse(5000L) != 1) return false;
