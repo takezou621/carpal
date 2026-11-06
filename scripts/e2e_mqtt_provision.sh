@@ -12,7 +12,8 @@ code() { curl -s -o /tmp/mqtt_e2e_body.json -w "%{http_code}" "$@"; }
 jqget() { python3 -c "import json; d=json.load(open('/tmp/mqtt_e2e_body.json')); print(eval(\"d$1\"))"; }
 
 echo "== 1) ログイン =="
-check login 200 "$(code -X POST $BASE/api/auth/login -H 'Content-Type: application/json' -d '{"email":"admin@carpal.local","password":"$ADMIN_PASSWORD"}')"
+LOGIN_JSON=$(printf '{"email":"%s","password":"%s"}' "admin@carpal.local" "$ADMIN_PASSWORD")
+check login 200 "$(code -X POST $BASE/api/auth/login -H 'Content-Type: application/json' -d "$LOGIN_JSON")"
 TOKEN=$(jqget "['access_token']")
 
 echo "== 2) APIでデバイス登録 =="
