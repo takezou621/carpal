@@ -32,5 +32,24 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  api:
+    build:
+      context: ../../backend/api
+    container_name: carpal-api
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    environment:
+      PGHOST: postgres
+      PGUSER: carpal
+      PGPASSWORD: carpal-dev-pass
+      PGDATABASE: carpal
+      PORT: 3001
+      JWT_SECRET: dev-jwt-secret-change-me   # 本番では必ず変更 (RS256移行予定)
+      ADMIN_EMAIL: admin@carpal.local
+      ADMIN_PASSWORD: change-me-now          # 初回シードのみ使用
+    ports:
+      - "3001:3001"
+
 volumes:
   pgdata:
