@@ -16,8 +16,8 @@ import { execFile } from 'node:child_process';
 
 const MQTT_HOST = process.env.MQTT_HOST_INTERNAL || 'host.docker.internal';
 const ADMIN_USER = process.env.DYNSEC_ADMIN_USER || 'admin';
-const ADMIN_PASS = process.env.DYNSEC_ADMIN_PASSWORD || 'dynsec-admin-pass';
-const WEBUSER_PASS = process.env.MQTT_PASS || 'webuserpass';
+const ADMIN_PASS = process.env.DYNSEC_ADMIN_PASSWORD;   // .env 必須
+const WEBUSER_PASS = process.env.MQTT_PASS;             // .env 必須
 const LEGACY_MQTT_USERS = Object.fromEntries(
   (process.env.LEGACY_MQTT_USERS || '')
     .split(',').filter(s => s.includes(':'))

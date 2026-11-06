@@ -25,7 +25,8 @@ import jwt from 'jsonwebtoken';
 import { startProvisioning, provisionDeviceClient, setDeviceEnabled } from './mqttProvision.mjs';
 
 const PORT = Number(process.env.PORT || 3001);
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
+const JWT_SECRET = process.env.JWT_SECRET;   // .env で必須 (GitGuardian対策: ハードコード禁止)
+if (!JWT_SECRET) { console.error('[api] JWT_SECRET is required (.env)'); process.exit(1); }
 const ACCESS_TTL_SEC = 15 * 60;
 const REFRESH_TTL_SEC = 7 * 24 * 3600;
 const ROTATION_OVERLAP_SEC = 24 * 3600;   // シークレット2本持ち期間 (multi-tenant §3.4)
@@ -123,7 +124,8 @@ async function migrate() {
   const { rows } = await pool.query('SELECT count(*)::int AS n FROM users');
   if (rows[0].n === 0) {
     const email = process.env.ADMIN_EMAIL || 'admin@carpal.local';
-    const pass = process.env.ADMIN_PASSWORD || 'change-me-now';
+    const pass = process.env.ADMIN_PASSWORD;
+    if (!pass) { console.log('[api] ADMIN_PASSWORD 未設定のため管理者シードをスキップ'); return; }
     const sys = true;
     const { rows: [u] } = await pool.query(
       `INSERT INTO users (email, password_hash, role, sys) VALUES ($1,$2,'admin',true) RETURNING id`,

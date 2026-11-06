@@ -3,6 +3,8 @@
 # API でデバイス登録 → 発行された secret で MQTT 接続可能/権限拒否/suspend を検証
 # 前提: mosquitto (dynsec) + postgres + ingest + api が稼働、mosquitto_pub/sub が使えること
 set -euo pipefail
+# 認証情報は gitignore済み .env から取得 (ハードコード禁止)
+source "$(dirname "$0")/../docker/backend/.env"
 BASE=${BASE:-http://127.0.0.1:3001}
 PASS=0; FAIL=0
 check() { if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "  OK  $1"; else FAIL=$((FAIL+1)); echo "  NG  $1 (expected=$2 actual=$3)"; fi; }
@@ -10,7 +12,7 @@ code() { curl -s -o /tmp/mqtt_e2e_body.json -w "%{http_code}" "$@"; }
 jqget() { python3 -c "import json; d=json.load(open('/tmp/mqtt_e2e_body.json')); print(eval(\"d$1\"))"; }
 
 echo "== 1) ログイン =="
-check login 200 "$(code -X POST $BASE/api/auth/login -H 'Content-Type: application/json' -d '{"email":"admin@carpal.local","password":"change-me-now"}')"
+check login 200 "$(code -X POST $BASE/api/auth/login -H 'Content-Type: application/json' -d '{"email":"admin@carpal.local","password":"$ADMIN_PASSWORD"}')"
 TOKEN=$(jqget "['access_token']")
 
 echo "== 2) APIでデバイス登録 =="
