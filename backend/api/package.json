@@ -6,6 +6,7 @@
   "dependencies": {
     "fastify": "^5.0.0",
     "jsonwebtoken": "^9.0.2",
+    "mqtt": "^5.10.1",
     "pg": "^8.13.0"
   }
 }
