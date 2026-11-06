@@ -3,6 +3,12 @@
 対応: `docs/multi-tenant-design.md` §4（構成・DB）, `docs/admin-design.md` §4（API）, `docs/contract.md`（契約）
 本書は Phase 2 の実装に直接使えるレベルの詳細を定義する。
 
+> **実装状況 (2026-11-06)**: §2 (ingest) と履歴APIの最小版を実装済み
+> (`backend/ingest/ingest.mjs` + `docker/backend/docker-compose.yml`)。
+> **意図的なMVP遂脱**: 月次パーティション → 単一テーブル+インデックス (データ増大時に移行)、
+> Fastify/JWT/Caddy/go-auth → 未実装、履歴APIは CORS wildcard (LANベンチ限定)。
+> ingest の DB障害時メモリバッファ (§1.2) も未実装 (書込失敗時はログ+欠落)。
+
 ## 1. プロセス構成
 
 ```
