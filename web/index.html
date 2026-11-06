@@ -51,6 +51,11 @@
     // 測位位置への自動センタリング (初回の1回のみ。復元済みなら実施しない)
     let didAutoCenter = !!savedView;
 
+    L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png', {
+      attribution: '<a href="https://maps.gsi.go.jp/development/ichiran.html">国土地理院</a>',
+      maxZoom: 18,
+    }).addTo(map);
+
     const CAR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="34" height="34" viewBox="0 0 24 24">
       <path d="M12 2 L19 22 L12 17 L5 22 Z" fill="#1565c0" stroke="#fff" stroke-width="1.5"/>
     </svg>`;
