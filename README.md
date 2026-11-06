@@ -30,9 +30,9 @@ ESP32 (T-SIM7080-S3) ──LTE/MQTT(TCP 1883)──▶ Mosquitto (Proxmox Docker
 
 # 2. シミュレータ起動 (1プロセス = 1デバイス。ACLのため username と DEVICE_IDS を一致させる)
 cd web/simulator && npm install
-MQTT_URL=mqtt://<host>:1883 MQTT_USER=car01 MQTT_PASS=car01pass DEVICE_IDS=car01 node simulator.js &
-MQTT_URL=mqtt://<host>:1883 MQTT_USER=car02 MQTT_PASS=car02pass DEVICE_IDS=car02 node simulator.js &
-MQTT_URL=mqtt://<host>:1883 MQTT_USER=car03 MQTT_PASS=car03pass DEVICE_IDS=car03 node simulator.js
+MQTT_URL=mqtt://<host>:1883 MQTT_USER=car01 MQTT_PASS=<device-secret> DEVICE_IDS=car01 node simulator.js &
+MQTT_URL=mqtt://<host>:1883 MQTT_USER=car02 MQTT_PASS=<device-secret> DEVICE_IDS=car02 node simulator.js &
+MQTT_URL=mqtt://<host>:1883 MQTT_USER=car03 MQTT_PASS=<device-secret> DEVICE_IDS=car03 node simulator.js
 
 # 3. デモページ表示 (ローカルサーバ推奨。file:// では ES module が動かない)
 cd web && python3 -m http.server 8000
@@ -52,7 +52,7 @@ cd docker/mosquitto
 docker compose up -d
 # dynsec 初期化 (初回のみ。admin パスワードは環境に合わせ変更)
 docker run --rm -v mosquitto_mosquitto-data:/mosquitto/data eclipse-mosquitto:2 \
-  mosquitto_ctrl dynsec init /mosquitto/data/dynamic-security.json admin dynsec-admin-pass
+  mosquitto_ctrl dynsec init /mosquitto/data/dynamic-security.json admin "$DYNSEC_ADMIN_PASSWORD"   # docker/backend/.env の値を使用
 docker compose restart
 ```
 

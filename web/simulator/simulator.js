@@ -14,8 +14,8 @@
 import mqtt from 'mqtt';
 
 const MQTT_URL = process.env.MQTT_URL || 'mqtt://localhost:1883';
-const MQTT_USER = process.env.MQTT_USER || 'car01';
-const MQTT_PASS = process.env.MQTT_PASS || 'car01pass';
+const MQTT_USER = process.env.MQTT_USER;   // .env/環境変数必須 (ハードコード禁止)
+const MQTT_PASS = process.env.MQTT_PASS;   // ハードコード禁止
 const INTERVAL_MS = Number(process.env.INTERVAL_MS || 3000);
 // マルチテナント対応: トピックは carpal/{tenant}/{device}/location
 const TENANT_ID = process.env.TENANT_ID || 'default';

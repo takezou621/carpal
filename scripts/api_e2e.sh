@@ -2,6 +2,8 @@
 # scripts/api_e2e.sh — API の E2E 検証 (正常系・権限拒否・suspend)
 # 使い方: ./scripts/api_e2e.sh  (API が http://127.0.0.1:3001 で起動していること)
 set -euo pipefail
+# 認証情報は gitignore済み .env から取得 (ハードコード禁止)
+source "$(dirname "$0")/../docker/backend/.env"
 BASE=${BASE:-http://127.0.0.1:3001}
 PASS=0; FAIL=0
 check() { # name expected actual
@@ -19,7 +21,7 @@ check no_token 401 "$(code $BASE/api/admin/tenants)"
 
 echo "== 3) ログイン (管理者シード) =="
 check login 200 "$(code -X POST $BASE/api/auth/login -H 'Content-Type: application/json' \
-  -d '{"email":"admin@carpal.local","password":"change-me-now"}')"
+  -d "{\"email\":\"admin@carpal.local\",\"password\":\"$ADMIN_PASSWORD\"}")"
 TOKEN=$(jqget "['access_token']")
 REFRESH=$(jqget "['refresh_token']")
 [ -n "$TOKEN" ] && { PASS=$((PASS+1)); echo "  OK  token issued"; } || { FAIL=$((FAIL+1)); echo "  NG  no token"; }

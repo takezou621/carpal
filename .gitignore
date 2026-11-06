@@ -34,3 +34,6 @@ web/config.local.js
 
 # AI agent local settings
 .claude/settings.local.json
+
+# backend credentials
+docker/backend/.env

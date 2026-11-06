@@ -9,7 +9,7 @@
  *
  * 環境変数:
  *   MQTT_URL   (既定 mqtt://host.docker.internal:1883)
- *   MQTT_USER / MQTT_PASS (既定 webuser / webuserpass)
+ *   MQTT_USER / MQTT_PASS (.env で必須)
  *   PGHOST / PGPORT / PGUSER / PGPASSWORD / PGDATABASE
  *   PORT (APIポート, 既定 3000)
  */
@@ -20,7 +20,7 @@ import http from 'node:http';
 
 const MQTT_URL = process.env.MQTT_URL || 'mqtt://host.docker.internal:1883';
 const MQTT_USER = process.env.MQTT_USER || 'webuser';
-const MQTT_PASS = process.env.MQTT_PASS || 'webuserpass';
+const MQTT_PASS = process.env.MQTT_PASS;   // .env 必須
 const API_PORT = Number(process.env.PORT || 3000);
 
 const TENANT_RE = /^[^+#]+$/; // トピック階層にワイルドカード混入を拒否
@@ -30,7 +30,7 @@ const pool = new pg.Pool({
   host: process.env.PGHOST || 'postgres',
   port: Number(process.env.PGPORT || 5432),
   user: process.env.PGUSER || 'carpal',
-  password: process.env.PGPASSWORD || 'carpal-dev-pass',
+  password: process.env.PGPASSWORD,
   database: process.env.PGDATABASE || 'carpal',
 });
 
