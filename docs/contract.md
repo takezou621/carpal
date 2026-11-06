@@ -8,7 +8,7 @@
 ```
 carpal/{tenant_id}/{device_id}/location
 carpal/{tenant_id}/{device_id}/status
-carpal/{tenant_id}/{device_id}/log          (Phase 2: WARN以上)
+carpal/{tenant_id}/{device_id}/log          (診断ログ。実装開始済み — §2.1 参照)
 carpal/{tenant_id}/{device_id}/cmd/ota      (Phase 3)
 ```
 
@@ -44,6 +44,21 @@ carpal/{tenant_id}/{device_id}/cmd/ota      (Phase 3)
 ```
 
 - LWT (online:false) と接続時 (online:true) のみ。Retain=true
+
+## 3.1 log スキーマ（診断用・QoS 0・Retain なし）
+
+```json
+{
+  "id":    "car01",          // device_id
+  "level": "INFO",           // DEBUG | INFO | WARN | ERROR (logging-design §2)
+  "event": "GNSS_WAITING",   // イベントID (logging-design §4)
+  "msg":   "elapsed=120s",   // 自由記述
+  "ts":    1794000000000     // 任意。時刻未同期時は省略
+}
+```
+
+- 受信側 (ingest) は WARN 以上を `device_events` に記録
+- 用途例: GNSS fix 待ちの進捗報告（GPS未取得時は `ts` 省略されるため受信時刻で判定）
 
 ## 4. MQTT 通信パラメータ
 

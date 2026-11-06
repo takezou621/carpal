@@ -20,3 +20,4 @@ topic write carpal/default/car03/#
 user webuser
 topic read carpal/+/+/location
 topic read carpal/+/+/status
+topic read carpal/+/+/log
