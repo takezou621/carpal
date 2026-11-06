@@ -102,17 +102,49 @@ PubSubClient  mqtt(netClient);
 
 // ============================================================
 // PMU 初期化 — モデム電源 (DC3) と GPSアンテナ電源 (BLDO2)
-// 公式 MinimalModemGPSExample 準拠
+// 重要: DC3 を投入する **前に** PWRKEY を LOW に固定しておくこと。
+// SIM7080G の autostart は「電源投入時に PWRKEY が LOW」の場合のみ
+// 働くため、順序を間違えるとモデムが起動しない (実機で確認)。
 // ============================================================
+// AXP2101 の実アドレスをプローブする (0x5A 通常 / 0x34 fault移行時)
+// NOTE: XPowersLib begin() は2回目呼び出しで __addr を更新しないため、
+//       begin を呼ぶ前に必ず1回だけ正しいアドレスを確定させること。
+uint8_t probePmuAddress() {
+  Wire.begin(I2C_SDA, I2C_SCL);
+  const uint8_t candidates[] = {0x5A, 0x34};
+  for (uint8_t addr : candidates) {
+    Wire.beginTransmission(addr);
+    Wire.write(0x03);                       // IC_TYPE register
+    if (Wire.endTransmission(false) == 0) {
+      Wire.requestFrom(addr, (uint8_t)1);
+      if (Wire.available() && Wire.read() == 0x4A) {   // AXP2101 chip id
+        Serial.printf("[PMU] AXP2101 found at 0x%02X\n", addr);
+        return addr;
+      }
+    }
+  }
+  return 0;
+}
+
 bool pmuInit() {
-  if (!PMU.begin(Wire, 0x5A /*AXP2101_SLAVE_ADDRESS*/, I2C_SDA, I2C_SCL)) {
+  // PWRKEY を LOW に固定 (autostart 有効化)
+  pinMode(BOARD_MODEM_PWR_PIN, OUTPUT);
+  digitalWrite(BOARD_MODEM_PWR_PIN, LOW);
+
+  uint8_t addr = probePmuAddress();
+  if (addr == 0) {
+    Serial.println("[PMU] AXP2101 not found on I2C (0x5A/0x34)");
     return false;
   }
-  // 電源サイクル時はモデム電源を一度OFFにしてクリーンに再起動
+  if (!PMU.begin(Wire, addr, I2C_SDA, I2C_SCL)) {
+    return false;
+  }
+  // 電源サイクル: モデム電源を一度OFFにしてクリーンに再起動
   PMU.disableDC3();
-  delay(200);
+  delay(1500);               // 残電荷による不完全リセットを避けるため1.5秒
   PMU.setDC3Voltage(3000);   // SIM7080G メイン電源 2700~3400mV
   PMU.enableDC3();
+  delay(500);                // 電源安定待ち (autostart がここで発火する)
 
   PMU.setBLDO2Voltage(3300);
   PMU.enableBLDO2();         // GPSアンテナ電源 — GPSに必須
@@ -122,31 +154,29 @@ bool pmuInit() {
 }
 
 // ============================================================
-// モデム起動 — PWRKEY パルス (公式のシーケンス準拠)
+// モデム起動 — autostart を待ち、必要なら手動 PWRKEY (LOW 1.2秒)
 // ============================================================
 bool modemPowerOn() {
   Serial1.begin(115200, SERIAL_8N1, BOARD_MODEM_RXD_PIN, BOARD_MODEM_TXD_PIN);
-
-  pinMode(BOARD_MODEM_PWR_PIN, OUTPUT);
-  digitalWrite(BOARD_MODEM_PWR_PIN, LOW);
-  delay(100);
-  digitalWrite(BOARD_MODEM_PWR_PIN, HIGH);
-  delay(1000);
-  digitalWrite(BOARD_MODEM_PWR_PIN, LOW);
 
   // DTR=LOW でスリープ抑止
   pinMode(BOARD_MODEM_DTR_PIN, OUTPUT);
   digitalWrite(BOARD_MODEM_DTR_PIN, LOW);
 
+  // autostart による起動を待つ (PMU が DC3 を投入済み)
   int retry = 0;
   while (!modem.testAT(1000)) {
     Serial.print(".");
-    if (retry++ > 15) {
-      digitalWrite(BOARD_MODEM_PWR_PIN, LOW);  delay(100);
-      digitalWrite(BOARD_MODEM_PWR_PIN, HIGH); delay(1000);
+    mqtt.loop();                       // 起動中もMQTT keepaliveを維持
+    if (retry++ > 8) {
+      // autostart しなかった場合: 手動起動。
+      // ボードの PWRKEY 回路はトランジスタ反転型のため、ESPピン HIGH ≥1.5秒
+      // が PWRKEY アサート (実機での成否パターンと整合: HIGH 1000ms は境界値)
+      Serial.println("\n[MODEM] manual power key (pin HIGH 2s)...");
+      digitalWrite(BOARD_MODEM_PWR_PIN, HIGH);
+      delay(2000);
       digitalWrite(BOARD_MODEM_PWR_PIN, LOW);
       retry = 0;
-      Serial.println("\nRetry start modem.");
     }
     delay(500);
   }
@@ -214,7 +244,10 @@ void publishLocation(double lat, double lng, float kmh, float brg, int usat,
 
   char buf[256];
   size_t n = serializeJson(doc, buf, sizeof(buf));
-  bool ok = mqtt.publish(TOPIC_LOC.c_str(), buf, n);
+  // NOTE: PubSubClient 2.7 では publish(topic, char*, size_t) が
+  //       (topic, payload, retain=true) の3引数オーバーロードと解釈され
+  //       retain が立つため、4引数で retain=false を明示する
+  bool ok = mqtt.publish(TOPIC_LOC.c_str(), (const uint8_t*)buf, (unsigned int)n, false);
   Serial.printf("[PUB] %s %s\n", ok ? "OK" : "FAIL", buf);
 }
 
@@ -237,7 +270,8 @@ void publishLog(const char* level, const char* event, const String &msg) {
   doc["msg"]   = msg;
   char buf[192];
   size_t n = serializeJson(doc, buf, sizeof(buf));
-  mqtt.publish(TOPIC_LOG.c_str(), buf, n);
+  // retain=false を明示 (3引数オーバーロードの罠 — publishLocation 側のNOTE参照)
+  mqtt.publish(TOPIC_LOG.c_str(), (const uint8_t*)buf, (unsigned int)n, false);
 }
 
 void setup() {
@@ -342,9 +376,12 @@ void loop() {
     // 進捗を log トピックへ報告 (USB を外して移動しても監視可能にする)
     if (millis() - lastWait > GNSS_LOG_INTERVAL_MS) {
       uint32_t elapsed = (millis() - gnssWaitStart) / 1000;
-      char m[64];
-      snprintf(m, sizeof(m), "elapsed=%lus rssi=%d", (unsigned long)elapsed,
-               (int)WiFi.RSSI());
+      char m[112];
+      snprintf(m, sizeof(m),
+               "elapsed=%lus rssi=%d dc3=%u/%umV bldo2=%u",
+               (unsigned long)elapsed, (int)WiFi.RSSI(),
+               (unsigned)PMU.isEnableDC3(), (unsigned)PMU.getDC3Voltage(),
+               (unsigned)PMU.isEnableBLDO2());
       publishLog("INFO", "GNSS_WAITING", m);
       Serial.printf("[GNSS] waiting for fix... %s\n", m);
       lastWait = millis();
