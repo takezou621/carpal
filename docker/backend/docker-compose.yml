@@ -1,0 +1,36 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: carpal-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: carpal
+      POSTGRES_PASSWORD: carpal-dev-pass   # LANベンチ用。公開時は必ず変更
+      POSTGRES_DB: carpal
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # 外部公開しない (ingest/api から内部ネットワークで接続)
+
+  ingest:
+    build:
+      context: ../../backend/ingest
+    container_name: carpal-ingest
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    environment:
+      MQTT_URL: mqtt://host.docker.internal:1883
+      MQTT_USER: webuser
+      MQTT_PASS: webuserpass
+      PGHOST: postgres
+      PGUSER: carpal
+      PGPASSWORD: carpal-dev-pass
+      PGDATABASE: carpal
+      PORT: 3000
+    ports:
+      - "3000:3000"    # 履歴API (LANベンチ用。公開時はCaddy経由+認証)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  pgdata:

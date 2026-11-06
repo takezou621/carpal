@@ -19,11 +19,19 @@
     }
     .car-icon { transition: transform .8s linear; } /* 回転をスムーズに */
     .car-marker { display: flex; flex-direction: column; align-items: center; font: bold 11px sans-serif; }
+    #historyBtn {
+      position: absolute; bottom: 18px; left: 12px; z-index: 1000;
+      background: rgba(255,255,255,.95); border: 1px solid #bbb; border-radius: 6px;
+      padding: 6px 12px; font: 13px sans-serif; cursor: pointer;
+      box-shadow: 0 1px 4px rgba(0,0,0,.3);
+    }
+    #historyBtn.on { background: #1565c0; color: #fff; border-color: #1565c0; }
   </style>
 </head>
 <body>
   <div id="map"></div>
   <div id="info">接続中…</div>
+  <button id="historyBtn">📚 履歴を表示</button>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script type="module">
@@ -138,8 +146,55 @@
     }
     setInterval(updateInfo, 5000);
 
+    // ---------- 移動履歴表示 (ingest 履歴API) ----------
+    const deviceColor = (id) => {
+      let h = 0;
+      for (const ch of id) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+      return `hsl(${h % 360} 65% 40%)`;
+    };
+    let historyLayers = [];
+    let historyOn = false;
+    const historyBtn = document.getElementById('historyBtn');
+
+    async function toggleHistory() {
+      if (historyOn) {
+        historyLayers.forEach(l => map.removeLayer(l));
+        historyLayers = [];
+        historyOn = false;
+        historyBtn.classList.remove('on');
+        historyBtn.textContent = '📚 履歴を表示';
+        return;
+      }
+      historyBtn.disabled = true;
+      try {
+        const res = await fetch(`http://${location.hostname}:3000/api/history?hours=24`);
+        if (!res.ok) throw new Error(`API ${res.status}`);
+        const { devices } = await res.json();
+        for (const [id, points] of Object.entries(devices)) {
+          if (points.length < 2) continue;
+          const latlngs = points.map(p => [p.lat, p.lng]);
+          const line = L.polyline(latlngs, {
+            color: deviceColor(id), weight: 3, opacity: 0.7,
+            dashArray: '6 6',
+          }).addTo(map).bindTooltip(`${id} の履歴 (${points.length}点)`);
+          historyLayers.push(line);
+        }
+        historyOn = true;
+        historyBtn.classList.add('on');
+        historyBtn.textContent = '📚 履歴を非表示';
+        if (historyLayers.length) map.fitBounds(historyLayers[0].getBounds().pad(0.2));
+        console.log(`[carpal] history drawn: ${Object.keys(devices).length} devices`);
+      } catch (e) {
+        console.error('[carpal]', 'HISTORY_ERROR', e.message);
+        alert(`履歴の取得に失敗しました: ${e.message}`);
+      } finally {
+        historyBtn.disabled = false;
+      }
+    }
+    historyBtn.addEventListener('click', toggleHistory);
+
     // 自動検証用デバッグフック (マーカー座標をテストから参照可能にする)
-    window.__carpalDebug = { map, markers };
+    window.__carpalDebug = { map, markers, toggleHistory, getHistoryLayers: () => historyLayers };
   </script>
 </body>
 </html>
