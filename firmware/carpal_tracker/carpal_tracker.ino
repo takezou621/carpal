@@ -74,7 +74,7 @@
 XPowersPMU PMU;
 
 // ===== MQTT トピック (docs/contract.md 準拠) =====
-String TOPIC_LOC, TOPIC_STATUS;
+String TOPIC_LOC, TOPIC_STATUS, TOPIC_LOG;
 
 // ===== 送信間隔 (適応制御) =====
 const uint32_t INTERVAL_MOVING_MS = 3000;
@@ -84,6 +84,10 @@ const float    MOVING_SPEED_KMH   = 5.0;
 // ===== 再接続バックオフ (operations-design §1.1) =====
 uint32_t backoffMs = 1000;
 uint32_t lastAttemptMs = 0;
+
+// GNSS fix 待ちの進捗を log トピックへ報告する間隔 (contract.md §3.1)
+const uint32_t GNSS_LOG_INTERVAL_MS = 15000;
+uint32_t gnssWaitStart = 0;
 
 // ===== クライアント =====
 #if CARPAL_USE_LTE
@@ -221,6 +225,21 @@ double lastLat = 0, lastLng = 0;
 bool   lastFixValid = false;
 uint32_t lastPublishMs = 0;
 
+// ============================================================
+// 診断ログ発報 (contract.md §3.1: carpal/{tenant}/{device}/log)
+// ============================================================
+void publishLog(const char* level, const char* event, const String &msg) {
+  if (!mqtt.connected()) return;
+  JsonDocument doc;
+  doc["id"]    = CARPAL_DEVICE_ID;
+  doc["level"] = level;
+  doc["event"] = event;
+  doc["msg"]   = msg;
+  char buf[192];
+  size_t n = serializeJson(doc, buf, sizeof(buf));
+  mqtt.publish(TOPIC_LOG.c_str(), buf, n);
+}
+
 void setup() {
   Serial.begin(115200);
   // GNSS は UTC を返すため mktime の解釈を UTC 固定に
@@ -230,6 +249,7 @@ void setup() {
 
   TOPIC_LOC    = String("carpal/") + CARPAL_TENANT_ID + "/" + CARPAL_DEVICE_ID + "/location";
   TOPIC_STATUS = String("carpal/") + CARPAL_TENANT_ID + "/" + CARPAL_DEVICE_ID + "/status";
+  TOPIC_LOG    = String("carpal/") + CARPAL_TENANT_ID + "/" + CARPAL_DEVICE_ID + "/log";
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
   // NOTE: LilyGO lib の PubSubClient 2.7 には setKeepAlive/setSocketTimeout が無い
   // (デフォルト KeepAlive 15秒・タイムアウト 15秒を使用。LWT検出は15秒後)
@@ -306,7 +326,10 @@ void loop() {
       delay(30000);
       return;
     }
-    Serial.println("[GNSS] enabled, waiting for fix...");
+    // 測位高速化: GPS + BEIDOU 構成 (公式 MinimalModemGPSExample の ADVANCED_GPS_CONFIG 準拠)
+    modem.sendAT("+CGNSMOD=1,0,1,0,0");
+    modem.waitResponse();
+    Serial.println("[GNSS] enabled (GPS+BEIDOU), waiting for fix...");
     modemReady = true;
   }
 
@@ -315,13 +338,30 @@ void loop() {
 
   if (!have || (lat2 == 0.0 && lon2 == 0.0)) {
     static uint32_t lastWait = 0;
-    if (millis() - lastWait > 10000) {
-      Serial.println("[GNSS] waiting for fix... (屋外/窓際で改善します)");
+    if (gnssWaitStart == 0) gnssWaitStart = millis();
+    // 進捗を log トピックへ報告 (USB を外して移動しても監視可能にする)
+    if (millis() - lastWait > GNSS_LOG_INTERVAL_MS) {
+      uint32_t elapsed = (millis() - gnssWaitStart) / 1000;
+      char m[64];
+      snprintf(m, sizeof(m), "elapsed=%lus rssi=%d", (unsigned long)elapsed,
+               (int)WiFi.RSSI());
+      publishLog("INFO", "GNSS_WAITING", m);
+      Serial.printf("[GNSS] waiting for fix... %s\n", m);
       lastWait = millis();
     }
     mqtt.loop();
     delay(1000);
     return;
+  }
+
+  // 初fixを log へ報告
+  if (gnssWaitStart > 0) {
+    char m[96];
+    snprintf(m, sizeof(m), "fix in %lus sats=%d lat=%.6f lng=%.6f",
+             (unsigned long)((millis() - gnssWaitStart) / 1000), usat2, lat2, lon2);
+    publishLog("INFO", "GNSS_FIX", m);
+    Serial.printf("[GNSS] FIX! %s\n", m);
+    gnssWaitStart = 0;
   }
 
   float kmh = speed2 * 1.852;   // ノット → km/h
