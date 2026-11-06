@@ -101,6 +101,9 @@
       if (!didAutoCenter) {
         didAutoCenter = true;
         map.setView([d.lat, d.lng], 14);
+      } else if (!map.getBounds().pad(0.15).contains(m.marker.getLatLng())) {
+        // 復元ビューなどでマーカーが画面外の場合は追従して見えるようにする
+        map.setView(m.marker.getLatLng(), Math.max(map.getZoom(), 12));
       }
 
       m.lastTs = Date.now();
