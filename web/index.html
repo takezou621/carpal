@@ -33,11 +33,23 @@
     const STALE_MS = 60000; // この時間更新が無い車両はオフライン扱い
 
     // ---------- 地図 ----------
-    const map = L.map('map').setView([35.6812, 139.7671], 13);
-    L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png', {
-      attribution: '<a href="https://maps.gsi.go.jp/development/ichiran.html">国土地理院</a>',
-      maxZoom: 18,
-    }).addTo(map);
+    // 初期ビュー: 前回の表示範囲を復元 (なければ東京駅)
+    let savedView = null;
+    try { savedView = JSON.parse(localStorage.getItem('carpal.view') || 'null'); } catch (e) {}
+    const map = L.map('map').setView(
+      savedView ? [savedView.lat, savedView.lng] : [35.6812, 139.7671],
+      savedView?.zoom ?? 13
+    );
+    // ユーザー操作後の表示範囲を保存 (次回オープン時に復元)
+    map.on('moveend', () => {
+      const c = map.getCenter();
+      try {
+        localStorage.setItem('carpal.view', JSON.stringify({ lat: c.lat, lng: c.lng, zoom: map.getZoom() }));
+      } catch (e) {}
+    });
+
+    // 測位位置への自動センタリング (初回の1回のみ。復元済みなら実施しない)
+    let didAutoCenter = !!savedView;
 
     const CAR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="34" height="34" viewBox="0 0 24 24">
       <path d="M12 2 L19 22 L12 17 L5 22 Z" fill="#1565c0" stroke="#fff" stroke-width="1.5"/>
@@ -79,6 +91,12 @@
       // 軌跡（直近100点）
       m.trail.addLatLng([d.lat, d.lng]);
       if (m.trail.getLatLngs().length > 100) m.trail.spliceLatLngs(0, 1);
+
+      // 測位位置への自動センタリング (セッション中最初の1回のみ)
+      if (!didAutoCenter) {
+        didAutoCenter = true;
+        map.setView([d.lat, d.lng], 14);
+      }
 
       m.lastTs = Date.now();
       updateInfo();
