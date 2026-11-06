@@ -1,0 +1,10 @@
+{
+  "name": "carpal-ingest",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "mqtt": "^5.10.1",
+    "pg": "^8.13.0"
+  }
+}
