@@ -63,3 +63,8 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 
 CREATE INDEX IF NOT EXISTS audit_logs_tenant_at_idx ON audit_logs (tenant_id, at DESC);
 CREATE INDEX IF NOT EXISTS audit_logs_action_idx ON audit_logs (action);
+
+CREATE TABLE IF NOT EXISTS app_keys (
+  name  text PRIMARY KEY,
+  value text NOT NULL
+);

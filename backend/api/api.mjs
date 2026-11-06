@@ -25,8 +25,9 @@ import jwt from 'jsonwebtoken';
 import { startProvisioning, provisionDeviceClient, setDeviceEnabled } from './mqttProvision.mjs';
 
 const PORT = Number(process.env.PORT || 3001);
-const JWT_SECRET = process.env.JWT_SECRET;   // .env で必須 (GitGuardian対策: ハードコード禁止)
-if (!JWT_SECRET) { console.error('[api] JWT_SECRET is required (.env)'); process.exit(1); }
+const VERSION = '1.0.0-beta1';
+// RS256 鍵ペア (初回生成後 app_keys テーブルに永続化 — 設計: backend-design §4)
+let __privateKey = null, __publicKey = null;
 const ACCESS_TTL_SEC = 15 * 60;
 const REFRESH_TTL_SEC = 7 * 24 * 3600;
 const ROTATION_OVERLAP_SEC = 24 * 3600;   // シークレット2本持ち期間 (multi-tenant §3.4)
@@ -58,8 +59,8 @@ const uuid = () => crypto.randomUUID();
 function signToken(user, tid) {
   return jwt.sign(
     { sub: user.id, tid: tid || null, role: user.role, sys: user.sys, ver: user.token_ver },
-    JWT_SECRET,
-    { expiresIn: ACCESS_TTL_SEC, algorithm: 'HS256' }
+    __privateKey,
+    { expiresIn: ACCESS_TTL_SEC, algorithm: 'RS256' }
   );
 }
 
@@ -90,7 +91,7 @@ app.decorate('authenticate', async (req, reply) => {
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
   if (!token) return reply.code(401).send({ error: { code: 'NO_TOKEN', message: 'Bearer token required' } });
   let payload;
-  try { payload = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] }); }
+  try { payload = jwt.verify(token, __publicKey, { algorithms: ['RS256'] }); }
   catch { return reply.code(401).send({ error: { code: 'TOKEN_EXPIRED_OR_INVALID', message: 'invalid token' } }); }
 
   // 即時失効チェック: users.disabled / token_ver (multi-tenant §3.4)
@@ -121,6 +122,21 @@ async function migrate() {
   await pool.query(sql);
   console.log('[api] migrations applied');
 
+  // RS256 鍵ペア (永続化)
+  const { rows: krows } = await pool.query(`SELECT value FROM app_keys WHERE name='jwt_rsa_private'`);
+  if (krows[0]) {
+    __privateKey = krows[0].value;
+  } else {
+    const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+    __privateKey = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+    __publicKey = publicKey.export({ type: 'spki', format: 'pem' }).toString();
+    await pool.query(`INSERT INTO app_keys (name, value) VALUES ('jwt_rsa_private',$1)`, [__privateKey]);
+    await pool.query(`INSERT INTO app_keys (name, value) VALUES ('jwt_rsa_public',$1)
+                      ON CONFLICT (name) DO NOTHING`, [__publicKey]).catch(() => {});
+    console.log('[api] RSA keypair generated');
+  }
+  __publicKey ||= crypto.createPublicKey(__privateKey).export({ type: 'spki', format: 'pem' }).toString();
+
   const { rows } = await pool.query('SELECT count(*)::int AS n FROM users');
   if (rows[0].n === 0) {
     const email = process.env.ADMIN_EMAIL || 'admin@carpal.local';
@@ -150,7 +166,7 @@ app.addHook('onSend', async (req, reply) => {
 app.get('/api/health', async () => {
   let db = false;
   try { await pool.query('SELECT 1'); db = true; } catch {}
-  return { ok: db, db, time: new Date().toISOString() };
+  return { ok: db, db, version: VERSION, time: new Date().toISOString() };
 });
 
 // --- auth ---
@@ -174,8 +190,12 @@ app.post('/api/auth/login', async (req, reply) => {
     `INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES ($1,$2, now() + interval '7 days')`,
     [u.id, sha256(refresh)]
   );
+  const { rows: allM } = await pool.query(
+    `SELECT m.tenant_id, m.role, t.name, t.status FROM memberships m
+     JOIN tenants t ON t.id = m.tenant_id WHERE m.user_id=$1`, [u.id]);
   return { access_token: token, token_type: 'Bearer', expires_in: ACCESS_TTL_SEC, refresh_token: refresh,
-           tenant_id: tid, role: u.role, sys: u.sys };
+           tenant_id: tid, role: u.role, sys: u.sys,
+           memberships: allM.map(m => ({ tenant_id: m.tenant_id, role: m.role, name: m.name, status: m.status })) };
 });
 
 app.post('/api/auth/refresh', async (req, reply) => {
@@ -202,6 +222,25 @@ app.post('/api/auth/refresh', async (req, reply) => {
   const { rows: ms } = await pool.query('SELECT tenant_id FROM memberships WHERE user_id=$1 ORDER BY tenant_id LIMIT 1', [u.id]);
   const token = signToken(u, u.sys ? null : ms[0]?.tenant_id);
   return { access_token: token, token_type: 'Bearer', expires_in: ACCESS_TTL_SEC, refresh_token: newRefresh };
+});
+
+// テナント切替 (membership 検証のうえ新トークン発行)
+app.post('/api/auth/tenant', { preHandler: app.authenticate }, async (req, reply) => {
+  const { tenant_id } = req.body || {};
+  if (!tenant_id) return reply.code(400).send({ error: { code: 'BAD_REQUEST', message: 'tenant_id required' } });
+  if (req.user.sys) {
+    const { rows: [t] } = await pool.query('SELECT id FROM tenants WHERE id=$1', [tenant_id]);
+    if (!t) return reply.code(404).send({ error: { code: 'TENANT_NOT_FOUND', message: 'not found' } });
+    const { rows: [u] } = await pool.query('SELECT * FROM users WHERE id=$1', [req.user.id]);
+    const token = signToken(u, tenant_id);
+    return { access_token: token, token_type: 'Bearer', expires_in: ACCESS_TTL_SEC };
+  }
+  const { rows: [m] } = await pool.query(
+    'SELECT role FROM memberships WHERE user_id=$1 AND tenant_id=$2', [req.user.id, tenant_id]);
+  if (!m) return reply.code(403).send({ error: { code: 'FORBIDDEN', message: 'not a member of this tenant' } });
+  const { rows: [u] } = await pool.query('SELECT * FROM users WHERE id=$1', [req.user.id]);
+  const token = signToken(u, tenant_id);
+  return { access_token: token, token_type: 'Bearer', expires_in: ACCESS_TTL_SEC };
 });
 
 // --- テナント (システム管理者) ---
@@ -234,6 +273,58 @@ app.post('/api/admin/tenants/:tid/suspend', { preHandler: [app.authenticate, req
   await audit(req, { actorId: req.user.id, actorRole: 'admin', tenantId: req.params.tid,
     action: status === 'active' ? 'tenant.resume' : 'tenant.suspend', targetType: 'tenant', targetId: req.params.tid });
   return { tenant: rows[0] };
+});
+
+// --- メンバー (テナント管理者 owner) ---
+app.get('/api/tenants/:tid/members', { preHandler: [app.authenticate, requireOwner] }, async (req) => {
+  const { rows } = await pool.query(
+    `SELECT u.id, u.email, m.role, u.disabled FROM memberships m
+     JOIN users u ON u.id = m.user_id WHERE m.tenant_id=$1 ORDER BY u.created_at`, [req.params.tid]);
+  return { members: rows };
+});
+
+app.post('/api/tenants/:tid/members', { preHandler: [app.authenticate, requireOwner] }, async (req, reply) => {
+  // NOTE: 招待メール送信は未実装 (Phase 3)。代わりに初期パスワードを1回だけ返す。
+  const { email, role, password } = req.body || {};
+  if (!email || !role || !['owner','viewer'].includes(role)) {
+    return reply.code(400).send({ error: { code: 'BAD_REQUEST', message: 'email and role (owner|viewer) required' } });
+  }
+  const { rows: [t] } = await pool.query(`SELECT status FROM tenants WHERE id=$1`, [req.params.tid]);
+  if (!t) return reply.code(404).send({ error: { code: 'TENANT_NOT_FOUND', message: 'not found' } });
+  const { rows: [ex] } = await pool.query(`SELECT id FROM users WHERE email=$1`, [email]);
+  let userId = ex?.id, initialPassword = null;
+  if (!userId) {
+    initialPassword = crypto.randomBytes(12).toString('hex');
+    const { rows: [u] } = await pool.query(
+      `INSERT INTO users (email, password_hash, role) VALUES ($1,$2,'viewer') RETURNING id`,
+      [email, scryptHash(initialPassword)]);
+    userId = u.id;
+  } else {
+    const { rows: [dup] } = await pool.query(
+      `SELECT 1 FROM memberships WHERE user_id=$1 AND tenant_id=$2`, [userId, req.params.tid]);
+    if (dup) return reply.code(409).send({ error: { code: 'ALREADY_MEMBER', message: 'already a member' } });
+  }
+  await pool.query(`INSERT INTO memberships (user_id, tenant_id, role) VALUES ($1,$2,$3)`,
+    [userId, req.params.tid, role]);
+  await audit(req, { actorId: req.user.id, actorRole: req.user.sys ? 'admin' : 'owner', tenantId: req.params.tid,
+    action: 'member.add', targetType: 'user', targetId: userId, detail: { email, role } });
+  return reply.code(201).send({ member: { user_id: userId, email, role },
+                                initial_password: initialPassword });   // 新規ユーザー時のみ1回
+});
+
+app.delete('/api/tenants/:tid/members/:uid', { preHandler: [app.authenticate, requireOwner] }, async (req, reply) => {
+  // 最後の owner は削除不可
+  const { rows: owners } = await pool.query(
+    `SELECT user_id FROM memberships WHERE tenant_id=$1 AND role='owner'`, [req.params.tid]);
+  if (owners.length === 1 && owners[0].user_id === req.params.uid) {
+    return reply.code(409).send({ error: { code: 'LAST_OWNER', message: 'cannot remove the last owner' } });
+  }
+  const { rowCount } = await pool.query(
+    `DELETE FROM memberships WHERE tenant_id=$1 AND user_id=$2`, [req.params.tid, req.params.uid]);
+  if (!rowCount) return reply.code(404).send({ error: { code: 'MEMBER_NOT_FOUND', message: 'not found' } });
+  await audit(req, { actorId: req.user.id, actorRole: req.user.sys ? 'admin' : 'owner', tenantId: req.params.tid,
+    action: 'member.remove', targetType: 'user', targetId: req.params.uid });
+  return { removed: true };
 });
 
 // --- デバイス (テナント管理者 owner) ---

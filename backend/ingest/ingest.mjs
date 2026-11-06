@@ -22,6 +22,9 @@ const MQTT_URL = process.env.MQTT_URL || 'mqtt://host.docker.internal:1883';
 const MQTT_USER = process.env.MQTT_USER || 'webuser';
 const MQTT_PASS = process.env.MQTT_PASS;   // .env 必須
 const API_PORT = Number(process.env.PORT || 3000);
+// 保持期間 (docs/operations-design.md §2: location 90日 / ログ730日)
+const RETENTION_DAYS = Number(process.env.RETENTION_DAYS || 90);
+const EVENT_RETENTION_DAYS = Number(process.env.EVENT_RETENTION_DAYS || 730);
 
 const TENANT_RE = /^[^+#]+$/; // トピック階層にワイルドカード混入を拒否
 
@@ -233,8 +236,27 @@ const start = async () => {
     try { await initDb(); break; }
     catch (e) { console.error('[ingest] db not ready, retry in 3s:', e.message); await new Promise(r => setTimeout(r, 3000)); }
   }
+  startCleanup();
   server.listen(API_PORT, () => console.log(`[ingest] history API on :${API_PORT}`));
 };
 start();
 
 process.on('SIGINT', async () => { await pool.end(); process.exit(0); });
+
+// ---------- 保持期間クリーンアップ (毎日 1回) ----------
+async function cleanup() {
+  try {
+    const r1 = await pool.query(
+      `DELETE FROM locations WHERE recorded_at < now() - ($1 || ' days')::interval`, [String(RETENTION_DAYS)]);
+    const r2 = await pool.query(
+      `DELETE FROM device_events WHERE at < now() - ($1 || ' days')::interval`, [String(EVENT_RETENTION_DAYS)]);
+    console.log(`[ingest] retention cleanup: locations=${r1.rowCount} events=${r2.rowCount}`);
+  } catch (e) {
+    console.error('[ingest] retention cleanup failed:', e.message);
+  }
+}
+let cleanupTimer = null;
+const startCleanup = () => {
+  cleanup();
+  cleanupTimer = setInterval(cleanup, 24 * 3600 * 1000);
+};

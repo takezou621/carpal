@@ -1,0 +1,78 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Node 構文検査
+        run: |
+          node --check backend/api/api.mjs
+          node --check backend/api/mqttProvision.mjs
+          node --check backend/ingest/ingest.mjs
+          node --check web/api.js
+          node --check web/simulator/simulator.js
+      - name: compose 設定検証
+        run: |
+          docker compose -f docker/mosquitto/docker-compose.yml config -q
+          docker compose -f docker/backend/docker-compose.yml config -q
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: テスト用 .env 生成 (CI限界値)
+        run: |
+          cd docker/backend
+          cat > .env <<ENV
+          PGPASSWORD=$(openssl rand -hex 16)
+          JWT_SECRET=$(openssl rand -hex 16)
+          DYNSEC_ADMIN_PASSWORD=$(openssl rand -hex 16)
+          MQTT_PASS=$(openssl rand -hex 16)
+          ADMIN_PASSWORD=$(openssl rand -hex 16)
+          LEGACY_MQTT_USERS=car01:ci-car01-pass
+          ENV
+      - name: Mosquitto 起動 (dynsec 初期化込み)
+        run: |
+          docker compose -f docker/mosquitto/docker-compose.yml up -d
+          sleep 2
+          docker run --rm -v carpal-mosquitto_mosquitto-data:/mosquitto/data eclipse-mosquitto:2 \
+            sh -c "mosquitto_ctrl dynsec init /mosquitto/data/dynamic-security.json admin \$(grep DYNSEC docker/backend/.env | cut -d= -f2)" || true
+          # dynsec ファイルが Mosquitto 起動前に無い場合に備えて再初期化→再起動
+          docker compose -f docker/mosquitto/docker-compose.yml restart
+      - name: バックエンド起動 (postgres + ingest + api)
+        run: |
+          docker compose -f docker/backend/docker-compose.yml up -d --build
+          sleep 15
+      - name: API E2E (18チェック)
+        run: ./scripts/api_e2e.sh
+      - name: MQTT プロビジョニング E2E (9チェック)
+        run: ./scripts/e2e_mqtt_provision.sh
+
+  fw-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: arduino-cli インストール
+        run: curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | BINDIR=/usr/local/bin sh
+      - name: esp32 コアインストール
+        run: |
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32
+      - name: LilyGO ライブラリ取得
+        run: git clone --depth 1 https://github.com/Xinyuan-LilyGO/LilyGO-T-SIM7080G /tmp/lilygo-libs
+      - name: ダミー secrets.h 生成
+        run: cp firmware/carpal_tracker/secrets.h.example firmware/carpal_tracker/secrets.h
+      - name: コンパイル検証
+        run: |
+          arduino-cli compile --fqbn "esp32:esp32:esp32s3box:USBMode=hwcdc" \
+            --libraries /tmp/lilygo-libs/lib \
+            firmware/carpal_tracker
