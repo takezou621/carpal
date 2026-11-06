@@ -13,7 +13,9 @@ export const auth = {
   get tid() { return localStorage.getItem('carpal.tid'); },
   get role() { return localStorage.getItem('carpal.role'); },
   get sys() { return localStorage.getItem('carpal.sys') === 'true'; },
-  save({ access_token, refresh_token, tenant_id, role, sys }) {
+  get memberships() { try { return JSON.parse(localStorage.getItem('carpal.memberships') || '[]'); } catch { return []; } },
+  save({ access_token, refresh_token, tenant_id, role, sys, memberships }) {
+    if (memberships) localStorage.setItem('carpal.memberships', JSON.stringify(memberships));
     localStorage.setItem('carpal.access_token', access_token);
     localStorage.setItem('carpal.refresh_token', refresh_token);
     if (tenant_id) localStorage.setItem('carpal.tid', tenant_id);
@@ -29,14 +31,13 @@ export const auth = {
 
 /** 401時にリフレッシュ→再試行するフェッチ */
 export async function apiFetch(path, options = {}) {
-  const doFetch = () => fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${auth.access}`,
-      ...(options.headers || {}),
-    },
-  });
+  const doFetch = () => {
+    const headers = { Authorization: `Bearer ${auth.access}` };
+    // ボディありの時だけ Content-Type を付ける (ボディ無しDELETEで
+    // Fastify 5 が FST_ERR_CTP_EMPTY_JSON_BODY を返すため)
+    if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+    return fetch(`${API_BASE}${path}`, { ...options, headers });
+  };
   let res = await doFetch();
   if (res.status === 401 && auth.refresh) {
     // リフレッシュ試行 (1回のみ)
@@ -75,6 +76,19 @@ export async function login(email, password) {
   if (!res.ok) throw new Error(body?.error?.message || 'ログインに失敗しました');
   auth.save(body);
   return body;
+}
+
+/** テナント切替 (新トークン発行) */
+export async function switchTenant(tenantId) {
+  const res = await fetch(`${API_BASE}/api/auth/tenant`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.access}` },
+    body: JSON.stringify({ tenant_id: tenantId }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body?.error?.message || 'テナント切替に失敗しました');
+  auth.save(body);
+  localStorage.setItem('carpal.tid', tenantId);
 }
 
 /** 未ログインならログインページへ */

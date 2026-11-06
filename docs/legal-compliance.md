@@ -76,7 +76,7 @@ SaaS提供者 (carpal運営)
 
 ## 7. 実装タスク
 
-- [ ] Phase 2-a: デバイス登録 API に `consent_confirmed` 必須化
+- [x] Phase 2-a: デバイス登録 API に `consent_confirmed` 必須化 (実装済み)
 - [ ] Phase 2-d: 登録UIの同意確認チェックボックス
 - [ ] Phase 3: 利用規約・プライバシーポリシーの法務レビュー付き確定版
 - [ ] Phase 3: ステータスページ・障害通知フロー

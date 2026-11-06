@@ -7,8 +7,8 @@
 > (`backend/ingest/ingest.mjs` + `docker/backend/docker-compose.yml`)。
 > locations (位置履歴) と device_events (ログ・実装済み: logトピック購読→保存、`GET /api/logs` で照会可)。
 > **意図的なMVP遂脱**: 月次パーティション → 単一テーブル+インデックス (データ増大時に移行)、
-> JWT は HS256 (設計はRS256 — go-auth 導入時に移行)、リフレッシュトークンはJSON応答 (本番はhttpOnly cookie+HTTPS)、
-> メンバー招待 (メール送信) 未実装、go-auth (動的ACL) → 未実装 (静的ACL運用中)、履歴APIは CORS wildcard (LANベンチ限定)。
+> JWT は **RS256 実装済み** (鍵ペアはDB永続化)、リフレッシュトークンはJSON応答 (本番はhttpOnly cookie+HTTPS)、
+> メンバーAPI実装済み (inviteメール送信のみ未実装 — 初期パスワード1回表示方式)、**MQTT動的認証は go-auth ではなく dynsec+mosquitto_ctrl 方式で実装済み**、履歴APIは CORS wildcard (LANベンチ限定)。
 > ログインレート制限はベンチ用に30/min (本番は5/minへ締める)。
 > ingest の DB障害時メモリバッファ (§1.2) も未実装 (書込失敗時はログ+欠落)。
 

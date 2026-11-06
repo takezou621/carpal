@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>carpal — デバイス管理</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2 L19 22 L12 17 L5 22 Z' fill='%231565c0'/%3E%3C/svg%3E">
   <style>
     body { font-family: system-ui, sans-serif; background: #f0f2f5; margin: 0; }
     header { background: #1565c0; color: #fff; padding: 12px 20px; display: flex;
@@ -39,10 +40,11 @@
 <body>
   <header>
     <h1>🚗 carpal デバイス管理</h1>
-    <div>
-      <a href="index.html">地図</a> &nbsp;|&nbsp;
+    <div style="display:flex; gap:12px; align-items:center">
+      <a href="index.html">地図</a>
+      <select id="tenantSel" style="font-size:13px; padding:4px 6px; border-radius:6px; border:none"></select>
       <span id="who" style="font-size:12px"></span>
-      <button class="gray" style="margin-left:10px" id="logoutBtn">ログアウト</button>
+      <button class="gray" id="logoutBtn">ログアウト</button>
     </div>
   </header>
   <div class="wrap">
@@ -53,6 +55,23 @@
         <tbody id="deviceRows"><tr><td colspan="4">読み込み中…</td></tr></tbody>
       </table>
       <div class="msg err" id="listErr"></div>
+    </div>
+
+    <div class="card">
+      <h2>メンバー管理</h2>
+      <table>
+        <thead><tr><th>メール</th><th>ロール</th><th>操作</th></tr></thead>
+        <tbody id="memberRows"><tr><td colspan="3" class="muted">—</td></tr></tbody>
+      </table>
+      <div style="display:flex; gap:8px; margin-top:12px; align-items:center; flex-wrap:wrap">
+        <input type="email" id="memberEmail" placeholder="email@example.com" style="flex:1; min-width:180px; padding:8px 10px; border:1px solid #ccc; border-radius:6px">
+        <select id="memberRole" style="padding:8px; border:1px solid #ccc; border-radius:6px">
+          <option value="viewer">viewer</option>
+          <option value="owner">owner</option>
+        </select>
+        <button class="primary" id="addMemberBtn">追加</button>
+      </div>
+      <div class="msg err" id="memberErr"></div>
     </div>
 
     <div class="card">
@@ -77,8 +96,15 @@
     <button class="primary" onclick="document.getElementById('secretDlg').close()">コピーしました</button>
   </dialog>
 
+  <dialog id="pwDlg">
+    <h2 style="margin:0 0 10px;font-size:15px">🔑 初期パスワード</h2>
+    <p style="font-size:13px;margin:0">このパスワードは <b>今この1回のみ</b> 表示されます。メンバーに安全に渡してください。</p>
+    <div class="secret-box" id="pwText"></div>
+    <button class="primary" onclick="document.getElementById('pwDlg').close()">コピーしました</button>
+  </dialog>
+
   <script type="module">
-    import { apiFetch, auth, requireAuth, logout } from './api.js';
+    import { apiFetch, auth, requireAuth, logout, switchTenant } from './api.js';
     requireAuth();
     document.getElementById('who').textContent = auth.sys ? 'システム管理者' : 'テナント管理者';
     document.getElementById('logoutBtn').addEventListener('click', logout);
@@ -172,7 +198,77 @@
       }
     });
 
+    // ---------- メンバー管理 ----------
+    const memberRows = $('memberRows');
+    async function loadMembers() {
+      if (!TID) return;
+      try {
+        const { members } = await apiFetch(`/api/tenants/${TID}/members`);
+        memberRows.innerHTML = members.map(m => `
+          <tr>
+            <td>${esc(m.email)}</td>
+            <td><span class="badge ${m.role === 'owner' ? 'on' : 'off'}">${esc(m.role)}</span></td>
+            <td><button class="danger" data-uid="${m.id}">削除</button></td>
+          </tr>`).join('');
+      } catch (e) { $('memberErr').textContent = e.message; }
+    }
+    memberRows.addEventListener('click', async (e) => {
+      const btn = e.target.closest('button');
+      if (!btn) return;
+      if (!confirm('このメンバーを削除しますか?')) return;
+      try {
+        await apiFetch(`/api/tenants/${TID}/members/${btn.dataset.uid}`, { method: 'DELETE' });
+        loadMembers();
+      } catch (ex) { $('memberErr').textContent = ex.message; }
+    });
+    $('addMemberBtn').addEventListener('click', async () => {
+      const email = $('memberEmail').value.trim();
+      const role = $('memberRole').value;
+      $('memberErr').textContent = '';
+      if (!email) { $('memberErr').textContent = 'メールを入力してください'; return; }
+      try {
+        const r = await apiFetch(`/api/tenants/${TID}/members`, {
+          method: 'POST',
+          body: JSON.stringify({ email, role }),
+        });
+        if (r.initial_password) {
+          $('pwText').textContent = `${email} の初期パスワード: ${r.initial_password}`;
+          document.getElementById('pwDlg').showModal();
+        }
+        $('memberEmail').value = '';
+        loadMembers();
+      } catch (ex) { $('memberErr').textContent = ex.message; }
+    });
+
+    // ---------- テナント切替 ----------
+    async function initTenantSwitcher() {
+      const sel = $('tenantSel');
+      let tenants = [];
+      if (auth.sys) {
+        const d = await fetch(`http://${location.hostname}:3001/api/admin/tenants`, {
+          headers: { Authorization: `Bearer ${auth.access}` },
+        }).then(r => r.json());
+        tenants = d.tenants.map(t => ({ id: t.id, name: t.name, status: t.status }));
+      } else {
+        tenants = auth.memberships.map(m => ({ id: m.tenant_id, name: m.name || m.tenant_id, status: m.status || 'active' }));
+      }
+      if (tenants.length <= 1) { sel.style.display = 'none'; return; }
+      sel.innerHTML = tenants.map(t =>
+        `<option value="${t.id}" ${t.id === TID ? 'selected' : ''}>${t.status === 'suspended' ? '[停止] ' : ''}${esc(t.name)}</option>`).join('');
+      sel.addEventListener('change', async () => {
+        try {
+          await switchTenant(sel.value);
+          location.reload();
+        } catch (ex) { alert(ex.message); }
+      });
+    }
+
     loadDevices();
+    loadMembers();
+    initTenantSwitcher();
+
+    // デバッグフック (E2E検証用)
+    window.__carpalDebug = { map: null, markers: {} };
   </script>
 </body>
 </html>
