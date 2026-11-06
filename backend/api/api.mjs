@@ -136,6 +136,14 @@ async function migrate() {
   }
 }
 
+// ---------- CORS (LANベンチ用 wildcard — 本番はCaddy配下でオリジン制限) ----------
+app.addHook('onSend', async (req, reply) => {
+  reply.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  reply.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+  if (req.method === 'OPTIONS') reply.code(204).send();
+});
+
 // ---------- routes ----------
 app.get('/api/health', async () => {
   let db = false;
@@ -164,7 +172,8 @@ app.post('/api/auth/login', async (req, reply) => {
     `INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES ($1,$2, now() + interval '7 days')`,
     [u.id, sha256(refresh)]
   );
-  return { access_token: token, token_type: 'Bearer', expires_in: ACCESS_TTL_SEC, refresh_token: refresh };
+  return { access_token: token, token_type: 'Bearer', expires_in: ACCESS_TTL_SEC, refresh_token: refresh,
+           tenant_id: tid, role: u.role, sys: u.sys };
 });
 
 app.post('/api/auth/refresh', async (req, reply) => {

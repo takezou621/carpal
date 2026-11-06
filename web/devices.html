@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>carpal — デバイス管理</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #f0f2f5; margin: 0; }
+    header { background: #1565c0; color: #fff; padding: 12px 20px; display: flex;
+             justify-content: space-between; align-items: center; }
+    header h1 { font-size: 16px; margin: 0; }
+    header a { color: #fff; font-size: 13px; }
+    .wrap { max-width: 760px; margin: 24px auto; padding: 0 16px; }
+    .card { background: #fff; border-radius: 8px; box-shadow: 0 1px 6px rgba(0,0,0,.1);
+            padding: 20px; margin-bottom: 20px; }
+    h2 { font-size: 15px; margin: 0 0 14px; color: #333; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid #eee; }
+    .badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; }
+    .on  { background: #e8f5e9; color: #2e7d32; }
+    .off { background: #eceff1; color: #616161; }
+    label { display: block; font-size: 12px; color: #555; margin: 10px 0 4px; }
+    input[type=text] { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px; }
+    .check { display: flex; gap: 8px; align-items: center; font-size: 13px; margin-top: 12px; }
+    button { padding: 8px 14px; font-size: 13px; border: none; border-radius: 6px; cursor: pointer; }
+    .primary { background: #1565c0; color: #fff; }
+    .gray { background: #eceff1; color: #333; }
+    .warn { background: #ef6c00; color: #fff; }
+    .danger { background: #c62828; color: #fff; }
+    dialog { border: none; border-radius: 10px; padding: 24px; max-width: 420px; }
+    dialog::backdrop { background: rgba(0,0,0,.4); }
+    .secret-box { background: #fff3e0; border: 1px solid #ffb74d; padding: 12px; border-radius: 6px;
+                  font-family: monospace; font-size: 12px; word-break: break-all; margin: 10px 0; }
+    .msg { font-size: 13px; margin-top: 10px; min-height: 16px; }
+    .err { color: #c62828; }
+    .muted { color: #999; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🚗 carpal デバイス管理</h1>
+    <div>
+      <a href="index.html">地図</a> &nbsp;|&nbsp;
+      <span id="who" style="font-size:12px"></span>
+      <button class="gray" style="margin-left:10px" id="logoutBtn">ログアウト</button>
+    </div>
+  </header>
+  <div class="wrap">
+    <div class="card">
+      <h2>デバイス一覧</h2>
+      <table>
+        <thead><tr><th>デバイス名</th><th>状態</th><th>登録日</th><th>操作</th></tr></thead>
+        <tbody id="deviceRows"><tr><td colspan="4">読み込み中…</td></tr></tbody>
+      </table>
+      <div class="msg err" id="listErr"></div>
+    </div>
+
+    <div class="card">
+      <h2>デバイス登録</h2>
+      <label>表示名 (例: car01)</label>
+      <input type="text" id="displayName" placeholder="car01">
+      <div class="check">
+        <input type="checkbox" id="consent">
+        <span>運転者から位置情報収集への同意を取得済みです (<a href="../docs/legal-compliance.md" target="_blank">規約</a>)</span>
+      </div>
+      <button class="primary" style="margin-top:14px" id="registerBtn">登録する</button>
+      <div class="msg err" id="regErr"></div>
+    </div>
+  </div>
+
+  <!-- シークレット表示モーダル (1回のみ) -->
+  <dialog id="secretDlg">
+    <h2 style="margin:0 0 10px;font-size:15px">🔑 デバイスシークレット</h2>
+    <p style="font-size:13px;margin:0">このシークレットは <b>今この1回のみ</b> 表示されます。紛失した場合は再発行してください。</p>
+    <div class="secret-box" id="secretText"></div>
+    <p class="muted">MQTT接続情報: username = 上記デバイスID / host = ブローカー / tenant は <span id="dlgTid"></span></p>
+    <button class="primary" onclick="document.getElementById('secretDlg').close()">コピーしました</button>
+  </dialog>
+
+  <script type="module">
+    import { apiFetch, auth, requireAuth, logout } from './api.js';
+    requireAuth();
+    document.getElementById('who').textContent = auth.sys ? 'システム管理者' : 'テナント管理者';
+    document.getElementById('logoutBtn').addEventListener('click', logout);
+
+    // sys管理者は tid を持たないため、有効なテナントを自動選択 (テナント切替UIは後続)
+    let TID = auth.tid;
+    const $ = id => document.getElementById(id);
+    const rowsEl = $('deviceRows');
+    const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+    if (!TID && auth.sys) {
+      const d = await fetch(`http://${location.hostname}:3001/api/admin/tenants`, {
+        headers: { Authorization: `Bearer ${auth.access}` },
+      }).then(r => r.json());
+      TID = (d.tenants.find(t => t.status === 'active') || d.tenants[0])?.id || null;
+      sessionStorage.setItem('carpal.effectiveTid', TID || '');
+      console.log('[devices] effective tenant:', TID);
+    }
+
+    async function loadDevices() {
+      rowsEl.innerHTML = '<tr><td colspan="4">読み込み中…</td></tr>';
+      $('listErr').textContent = '';
+      try {
+        const { devices } = await apiFetch(`/api/tenants/${TID}/devices`);
+        if (!devices.length) {
+          rowsEl.innerHTML = '<tr><td colspan="4" class="muted">登録されたデバイスはありません</td></tr>';
+          return;
+        }
+        rowsEl.innerHTML = devices.map(d => `
+          <tr>
+            <td>${esc(d.display_name)}</td>
+            <td>${d.disabled ? '<span class="badge off">無効</span>' : '<span class="badge on">有効</span>'}</td>
+            <td class="muted">${new Date(d.created_at).toLocaleString('ja-JP')}</td>
+            <td>
+              <button class="gray" data-act="rotate" data-id="${d.id}">secret再発行</button>
+              <button class="${d.disabled ? 'primary' : 'danger'}" data-act="toggle" data-id="${d.id}" data-dis="${d.disabled}">
+                ${d.disabled ? '有効化' : '無効化'}
+              </button>
+            </td>
+          </tr>`).join('');
+      } catch (e) {
+        $('listErr').textContent = e.message;
+      }
+    }
+
+    rowsEl.addEventListener('click', async (e) => {
+      const btn = e.target.closest('button');
+      if (!btn) return;
+      const id = btn.dataset.id;
+      if (!confirm(`デバイス ${id.slice(0,8)}… の「${btn.textContent}」を実行しますか?`)) return;
+      try {
+        if (btn.dataset.act === 'rotate') {
+          const r = await apiFetch(`/api/tenants/${TID}/devices/${id}/rotate`, { method: 'POST' });
+          showSecret(r.secret, `username: ${id}`);
+        } else if (btn.dataset.act === 'toggle') {
+          await apiFetch(`/api/tenants/${TID}/devices/${id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ disabled: btn.dataset.dis !== 'true' }),
+          });
+        }
+        loadDevices();
+      } catch (ex) {
+        $('listErr').textContent = ex.message;
+      }
+    });
+
+    function showSecret(secret, extra) {
+      $('secretText').textContent = secret;
+      $('dlgTid').textContent = auth.tid;
+      navigator.clipboard?.writeText(secret).catch(() => {});
+      $('secretDlg').showModal();
+    }
+
+    $('registerBtn').addEventListener('click', async () => {
+      const name = $('displayName').value.trim();
+      const consent = $('consent').checked;
+      $('regErr').textContent = '';
+      if (!name) { $('regErr').textContent = '表示名を入力してください'; return; }
+      if (!consent) { $('regErr').textContent = '運転者の同意確認が必要です'; return; }
+      try {
+        const r = await apiFetch(`/api/tenants/${TID}/devices`, {
+          method: 'POST',
+          body: JSON.stringify({ display_name: name, consent_confirmed: consent }),
+        });
+        showSecret(r.secret, `username: ${r.device.id}`);
+        $('displayName').value = '';
+        $('consent').checked = false;
+        loadDevices();
+      } catch (ex) {
+        $('regErr').textContent = ex.message;
+      }
+    });
+
+    loadDevices();
+  </script>
+</body>
+</html>
