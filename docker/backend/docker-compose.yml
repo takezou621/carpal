@@ -48,6 +48,13 @@ services:
       JWT_SECRET: dev-jwt-secret-change-me   # 本番では必ず変更 (RS256移行予定)
       ADMIN_EMAIL: admin@carpal.local
       ADMIN_PASSWORD: change-me-now          # 初回シードのみ使用
+      MQTT_URL: mqtt://host.docker.internal:1883   # dynsec 管理 (MQTT認証プロビジョニング)
+      DYNSEC_ADMIN_USER: admin
+      DYNSEC_ADMIN_PASSWORD: dynsec-admin-pass
+      # 過去資産の移行用 (secret_hash から復元できないため環境変数で与える。実機再構成後に削除)
+      LEGACY_MQTT_USERS: car01:car01pass,car02:car02pass,car03:car03pass
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "3001:3001"
 

@@ -43,19 +43,19 @@ cd web && python3 -m http.server 8000
 
 ## Mosquitto のセットアップ
 
+認証は **Mosquitto 組込み Dynamic Security (dynsec)** による動的管理です。
+ユーザー/ACL の手動管理は不要 — API でデバイス登録すると dynsec クライアントが自動作成されます
+(デバイス = 自トピック `carpal/{tenant}/{device}/#` への publish のみ / webuser = subscribe のみ)。
+
 ```bash
 cd docker/mosquitto
-# ユーザ作成 (デバイスごとに username=device_id で発行する。共用ユーザーは作らない)
-docker run --rm -it -v "$PWD":/mosquitto -v "$PWD":/mosquitto/config \
-  eclipse-mosquitto:2 mosquitto_passwd -c /mosquitto/config/passwd car01
-docker run --rm -it -v "$PWD":/mosquitto -v "$PWD":/mosquitto/config \
-  eclipse-mosquitto:2 mosquitto_passwd -b /mosquitto/config/passwd car02 <password>
-docker run --rm -it -v "$PWD":/mosquitto -v "$PWD":/mosquitto/config \
-  eclipse-mosquitto:2 mosquitto_passwd -b /mosquitto/config/passwd car03 <password>
-docker run --rm -it -v "$PWD":/mosquitto -v "$PWD":/mosquitto/config \
-  eclipse-mosquitto:2 mosquitto_passwd -b /mosquitto/config/passwd webuser <password>
 docker compose up -d
+# dynsec 初期化 (初回のみ。admin パスワードは環境に合わせ変更)
+docker run --rm -v mosquitto_mosquitto-data:/mosquitto/data eclipse-mosquitto:2 \
+  mosquitto_ctrl dynsec init /mosquitto/data/dynamic-security.json admin dynsec-admin-pass
+docker compose restart
 ```
+
 
 権限は `acl_file` で分離: デバイスユーザーは publish のみ、`webuser` は subscribe のみ。
 

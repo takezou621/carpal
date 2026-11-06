@@ -22,6 +22,7 @@ import Fastify from 'fastify';
 import pg from 'pg';
 import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
+import { startProvisioning, provisionDeviceClient, setDeviceEnabled } from './mqttProvision.mjs';
 
 const PORT = Number(process.env.PORT || 3001);
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
@@ -213,6 +214,12 @@ app.post('/api/admin/tenants/:tid/suspend', { preHandler: [app.authenticate, req
   const status = req.body?.resume ? 'active' : 'suspended';
   const { rows } = await pool.query(`UPDATE tenants SET status=$1 WHERE id=$2 RETURNING id, name, status`, [status, req.params.tid]);
   if (!rows[0]) return reply.code(404).send({ error: { code: 'TENANT_NOT_FOUND', message: 'not found' } });
+  // テナント全デバイスのMQTTクライアントを有効/無効化 (suspend強制)
+  const { rows: devs } = await pool.query(`SELECT id FROM devices WHERE tenant_id=$1`, [req.params.tid]);
+  for (const d of devs) {
+    try { await setDeviceEnabled(d.id, status === 'active'); }
+    catch (e) { console.error(`[api] mqtt ${d.id} enable/disable failed:`, e.message); }
+  }
   await audit(req, { actorId: req.user.id, actorRole: 'admin', tenantId: req.params.tid,
     action: status === 'active' ? 'tenant.resume' : 'tenant.suspend', targetType: 'tenant', targetId: req.params.tid });
   return { tenant: rows[0] };
@@ -245,6 +252,13 @@ app.post('/api/tenants/:tid/devices', { preHandler: [app.authenticate, requireOw
   );
   await audit(req, { actorId: req.user.id, actorRole: req.user.sys ? 'admin' : 'owner', tenantId: req.params.tid,
     action: 'device.create', targetType: 'device', targetId: d.id, detail: { display_name } });
+  // MQTT dynsec プロビジョニング (失敗時は500 — DB行は残るためローテーションで再プロビジョニング可)
+  try {
+    await provisionDeviceClient(req.params.tid, d.id, secret);
+  } catch (e) {
+    console.error('[api] mqtt provisioning failed:', e.message);
+    return reply.code(500).send({ error: { code: 'MQTT_PROVISION_FAILED', message: e.message } });
+  }
   // secret はこの応答1回のみ (admin-design T-1)
   return reply.code(201).send({ device: d, secret, mqtt: { username: d.id, tenant: req.params.tid } });
 });
@@ -259,6 +273,11 @@ app.post('/api/tenants/:tid/devices/:did/rotate', { preHandler: [app.authenticat
   if (!rows[0]) return reply.code(404).send({ error: { code: 'DEVICE_NOT_FOUND', message: 'not found' } });
   await audit(req, { actorId: req.user.id, actorRole: req.user.sys ? 'admin' : 'owner', tenantId: req.params.tid,
     action: 'device.rotate_secret', targetType: 'device', targetId: req.params.did });
+  try {
+    await provisionDeviceClient(req.params.tid, req.params.did, secret);   // setClientPassword 相当
+  } catch (e) {
+    console.error('[api] mqtt password update failed:', e.message);
+  }
   // 旧シークレットは ROTATION_OVERLAP_SEC の重複期間後廃棄 (運用で24h後に disabled 化)
   return { device: rows[0], secret, previous_grace_hours: 24 };
 });
@@ -273,6 +292,10 @@ app.patch('/api/tenants/:tid/devices/:did', { preHandler: [app.authenticate, req
     [req.params.did, display_name ?? null, disabled ?? null, req.params.tid]
   );
   if (!rows[0]) return reply.code(404).send({ error: { code: 'DEVICE_NOT_FOUND', message: 'not found' } });
+  if (disabled !== undefined) {
+    try { await setDeviceEnabled(req.params.did, !disabled); }
+    catch (e) { console.error('[api] mqtt enable/disable failed:', e.message); }
+  }
   await audit(req, { actorId: req.user.id, actorRole: req.user.sys ? 'admin' : 'owner', tenantId: req.params.tid,
     action: 'device.update', targetType: 'device', targetId: req.params.did, detail: { display_name, disabled } });
   return { device: rows[0] };
@@ -292,6 +315,7 @@ const start = async () => {
     catch (e) { console.error('[api] db not ready, retry in 3s:', e.message); await new Promise(r => setTimeout(r, 3000)); }
   }
   await migrate();
+  startProvisioning(pool);
   await app.listen({ port: PORT, host: '0.0.0.0' });
   console.log(`[api] listening on :${PORT}`);
 };

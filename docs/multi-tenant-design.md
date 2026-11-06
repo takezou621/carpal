@@ -51,6 +51,13 @@ carpal/{tenant_id}/{device_id}/cmd/ota      # Phase 3
 
 ### 3.2 MQTT 動的認証（ポイント）
 
+> **実装決定 (2026-11-06)**: go-auth プラグインの代わりに **Mosquitto 組込み Dynamic Security (dynsec)**
+> を採用 (ビルド不要・2.1系で公式サポート)。API が `mosquitto_ctrl` (api イメージに内蔵) を実行し、
+> device.create/rotate/suspend に連動して dynsec クライアント/role を動的管理する。
+> 詳細実装: `backend/api/mqttProvision.mjs` + `docker/mosquitto/mosquitto.conf` (plugin 行)。
+
+
+
 テナントが増えるたびに `passwd` を手配布はできないため:
 
 - **Mosquitto の動的認証プラグイン**（例: `mosquitto-go-auth`）で、認証要求時にバックエンド/DBへ問い合わせる

@@ -206,7 +206,7 @@ carpal/
 | 1-f | マルチテナント化 (トピック新形式, ACL, 認証情報の外部化) | ✅ 完了 |
 | 2-a | Mosquitto セットアップ + シミュレータ→ブラウザ E2E | ✅ 完了 (2026-11-02: ACL拒否テスト・WS購読込み。ブラウザ描画は目視確認待ち) |
 | 2-b | バックエンド基盤 (PostgreSQL + API + ingest + Caddy) | 🔄 最小版完了 (2026-11-06: ingest+PostgreSQL+履歴APIを実装、移動履歴の地図表示を実機で検証済み。Fastify/JWT/Caddy は後続) |
-| 2-c | テナント/デバイス管理 API・JWT 認証・go-auth | 🔄 API コア完了 (2026-11-06: Fastify+JWT(HS256)+監査ログ+secret発行/ローテーション+suspend+refresh回転、E2E 18/18 PASS。go-auth・メンバー招待は後続) |
+| 2-c | テナント/デバイス管理 API・JWT 認証・MQTT動的認証 | ✅ コア完了 (2026-11-06: Fastify+JWT+監査ログ+secret発行/ローテーション+suspend と **dynsec 動的MQTT認証** (API登録→即MQTT利用可) を実装、E2E 18/18 + プロビジョニング9/9 PASS。メンバー招待・RS256移行は後続) |
 | 2-d | フロント UI (ログイン・テナントスイッチャー・ui-design M1〜M3) | 部分 (履歴表示・自動センタリング実装済み) |
 | 2-e | ESP32 実機検証 | 🔄 進行中 (2026-11-06: PMUアドレス異常 (0x5A→0x34) を解明・対応し、WiFi→LAN Mosquitto接続・モデムAT応答・GNSS測位開始まで確認。GPS fix は屋外で確認、LTE は SIM 到着後) |
 | 3 | 外部公開 (WSS)、Admin コンソール、OTA、SaaS 化 (課金) | 未着手 |
