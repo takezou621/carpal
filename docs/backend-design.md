@@ -5,6 +5,7 @@
 
 > **実装状況 (2026-11-06)**: §2 (ingest) と履歴APIの最小版を実装済み
 > (`backend/ingest/ingest.mjs` + `docker/backend/docker-compose.yml`)。
+> locations (位置履歴) と device_events (ログ・実装済み: logトピック購読→保存、`GET /api/logs` で照会可)。
 > **意図的なMVP遂脱**: 月次パーティション → 単一テーブル+インデックス (データ増大時に移行)、
 > Fastify/JWT/Caddy/go-auth → 未実装、履歴APIは CORS wildcard (LANベンチ限定)。
 > ingest の DB障害時メモリバッファ (§1.2) も未実装 (書込失敗時はログ+欠落)。
