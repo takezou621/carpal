@@ -54,6 +54,19 @@ async function initDb() {
   await pool.query(`
     CREATE INDEX IF NOT EXISTS locations_query_idx
       ON locations (tenant_id, device_id, recorded_at DESC)`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS device_events (
+      id        bigserial PRIMARY KEY,
+      device_id text NOT NULL,
+      tenant_id text NOT NULL DEFAULT 'default',
+      level     text NOT NULL,
+      event_id  text NOT NULL,
+      message   text,
+      at        timestamptz NOT NULL DEFAULT now()
+    )`);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS device_events_query_idx
+      ON device_events (device_id, at DESC)`);
   console.log('[ingest] db schema ready');
 }
 
@@ -102,13 +115,34 @@ const mqttClient = mqtt.connect(MQTT_URL, {
 mqttClient.on('connect', async () => {
   console.log(`[ingest] connected to ${MQTT_URL}`);
   mqttClient.subscribe('carpal/+/+/location', { qos: 1 });
+  mqttClient.subscribe('carpal/+/+/log', { qos: 1 });
 });
 
 mqttClient.on('message', async (topic, payload) => {
+  const parts = topic.split('/');
+  if (parts.length !== 4 || parts[0] !== 'carpal') return;
+  const [, tenantId, deviceId, kind] = parts;
+
+  if (kind === 'log') {
+    // 診断ログ (contract.md §3.1) を device_events に保存
+    try {
+      const d = JSON.parse(payload.toString());
+      if (!TENANT_RE.test(deviceId) || !d.level || !d.event) return;
+      await pool.query(
+        `INSERT INTO device_events (device_id, tenant_id, level, event_id, message)
+         VALUES ($1,$2,$3,$4,$5)`,
+        [deviceId, tenantId, String(d.level).slice(0, 10), String(d.event).slice(0, 40),
+         d.msg ? String(d.msg).slice(0, 200) : null]
+      );
+    } catch (e) {
+      console.error('[ingest] log insert failed:', e.message);
+    }
+    return;
+  }
+
   const v = validate(topic, payload);
   if (v.skip) return;
   if (v.error) {
-    // MVP: device_events テーブル整備まではログのみ (backend-design §2.2 フォローアップ)
     console.warn(`[ingest] ${v.error} (${v.why || ''}): ${topic}`);
     return;
   }
@@ -133,6 +167,34 @@ mqttClient.on('error', (e) => console.error('[ingest] mqtt error:', e.message));
 const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');   // LANベンチ用 (本番は制限)
   const url = new URL(req.url, 'http://localhost');
+
+  // ログ照会: /api/logs?hours=24&device=car01&level=WARN
+  if (url.pathname === '/api/logs') {
+    const hours = Math.min(Math.max(Number(url.searchParams.get('hours')) || 24, 1), 24 * 30);
+    const device = url.searchParams.get('device');
+    const level = url.searchParams.get('level');
+    const conds = ['at > now() - ($1 || \' hours\')::interval'];
+    const params = [String(hours)];
+    if (device) { params.push(device); conds.push(`device_id = $${params.length}`); }
+    if (level) { params.push(level.toUpperCase()); conds.push(`level = $${params.length}`); }
+    try {
+      const { rows } = await pool.query(
+        `SELECT device_id, level, event_id, message,
+                EXTRACT(EPOCH FROM at) * 1000 AS ts
+         FROM device_events
+         WHERE ${conds.join(' AND ')}
+         ORDER BY at DESC LIMIT 200`,
+        params
+      );
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ logs: rows, count: rows.length }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
   if (url.pathname !== '/api/history') {
     res.writeHead(404, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'not_found' }));
