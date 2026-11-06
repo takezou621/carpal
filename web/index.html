@@ -111,6 +111,9 @@
         : '車両を待機中…';
     }
     setInterval(updateInfo, 5000);
+
+    // 自動検証用デバッグフック (マーカー座標をテストから参照可能にする)
+    window.__carpalDebug = { map, markers };
   </script>
 </body>
 </html>
