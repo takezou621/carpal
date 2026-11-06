@@ -1,279 +1,341 @@
 /**
- * carpal_tracker.ino
- * LILYGO T-SIM7080-S3 用 車両追跡ファームウェア
+ * carpal_tracker.ino — LILYGO T-SIM7080G-S3 用 車両追跡ファームウェア
  *
- * - SIM7080G の GNSS で緯度経度・速度・方位を取得
- * - LTE (Cat-M) 接続後、MQTT で JSON をパブリッシュ
- * - 停車時は送信間隔を伸ばす省電力制御つき
+ * 公式リポジトリ (github.com/Xinyuan-LilyGO/LilyGo-T-SIM7080G) の
+ * utilities.h / MinimalModemGPSExample に準拠した実装。
  *
- * 必要ライブラリ (Arduino Library Manager):
- *   - TinyGSM          (>= 0.11.7)  : モデム制御 (MQTTも内蔵のTinyGSMClient MQTTが便利)
- *   - PubSubClient     (>= 2.3)     : MQTT クライアント
- *   - ArduinoJson      (>= 7.x)     : JSON 生成
+ * ハードウェア構成 (T-SIM7080G-S3):
+ *   - ESP32-S3 (ネイティブUSB)
+ *   - SIM7080G モデム: 電源は AXP2101 PMU の DC3 (3000mV)
+ *   - GPSアンテナ電源: PMU BLDO2 (3300mV) — GPS使用前に必ずON
+ *   - ピン: UART RX=4 TX=5 / PWRKEY=41 / DTR=42 / RI=3 / I2C SDA=15 SCL=7
  *
- * ボード設定:
- *   Board: ESP32S3 Dev Module
- *   USB CDC On Boot: Enabled
- *   PS: T-SIM7080-S3 は PSRAM搭載 → OPI PSRAM 有効推奨
+ * 接続経路:
+ *   - CARPAL_USE_LTE 0 (既定): ESP32-S3 の WiFi で LAN の Mosquitto に接続 (ベンチ検証用)
+ *   - CARPAL_USE_LTE 1: SIM7080G の LTE Cat-M 経由 (SIM到着後の実車検証用)
+ *
+ * 必要ライブラリ:
+ *   - TinyGSM 0.12.0 (LilyGO fork — リポジトリ lib/TinyGSM を推奨)
+ *   - XPowersLib     (リポジトリ lib/XPowersLib)
+ *   - PubSubClient   (リポジトリ lib/pubsubclient)
+ *   - ArduinoJson v7 (Library Manager)
+ *
+ * 認証情報は secrets.h に分離 (secrets.h.example をコピー。コミット禁止)。
  */
 
 #include <Arduino.h>
+
+// ===== 接続経路の選択 (secrets.h で上書き可) =====
+#if __has_include("secrets.h")
+#include "secrets.h"
+#define CARPAL_HAS_SECRETS 1
+#else
+#warning "secrets.h がありません。secrets.h.example をコピーして設定してください"
+#define CARPAL_HAS_SECRETS 0
+#define WIFI_SSID ""
+#define WIFI_PASS ""
+#define MQTT_HOST ""
+#define MQTT_PORT 1883
+#define MQTT_USER ""
+#define MQTT_PASS ""
+#define CARPAL_TENANT_ID "default"
+#define CARPAL_DEVICE_ID "car01"
+#define CARPAL_DEVICE_SECRET "change-me"
+#define CARPAL_USE_LTE 0
+#endif
+
+#if CARPAL_USE_LTE
+#define TINY_GSM_MODEM_SIM7080
+#define TINY_GSM_RX_BUFFER 1024
 #include <TinyGsmClient.h>
+#else
+#include <WiFi.h>
+// WiFiベンチモードでも GNSS は SIM7080G の AT 経由で使うため TinyGSM を読む
+#define TINY_GSM_MODEM_SIM7080
+#define TINY_GSM_RX_BUFFER 1024
+#include <TinyGsmClient.h>
+#endif
+
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 
-// ============================================================
-// ハードウェア定義 (T-SIM7080-S3)
-// ============================================================
-#define UART_BAUD           115200
-#define PIN_DTR             35
-#define PIN_TX              26
-#define PIN_RX              27
-#define PWR_PIN             4
-#define SD_DET              33
-#define MODEM_BAUD          115200
+// ===== ボードピン定義 (公式 utilities.h 準拠) =====
+#define BOARD_MODEM_PWR_PIN   41   // SIM7080G PWRKEY
+#define BOARD_MODEM_DTR_PIN   42
+#define BOARD_MODEM_RI_PIN    3
+#define BOARD_MODEM_RXD_PIN   4    // ESP32-S3 側 RX (モデム TX)
+#define BOARD_MODEM_TXD_PIN   5    // ESP32-S3 側 TX (モデム RX)
+#define I2C_SDA               15
+#define I2C_SCL               7
 
-// ============================================================
-// ユーザ設定 (環境に合わせて変更)
-// ============================================================
-const char*  APN          = "your-apn";            // SIM の APN
-const char*  MQTT_HOST    = "192.168.1.100";       // Mosquitto (自宅 Proxmox のアドレス)
-const uint16_t MQTT_PORT  = 1883;
-const char*  MQTT_USER    = "";                    // 認証なしの場合は空
-const char*  MQTT_PASS    = "";
-const char*  TENANT_ID    = "default";               // テナントID (将来SaaS化時にUUID化)
-const char*  DEVICE_ID    = "car01";                  // デバイスID (車両ごとに変更)
-const char*  DEVICE_SECRET= "change-me";              // デバイス認証シークレット (MQTTパスワード)
+// ===== PMU (AXP2101) =====
+#define XPOWERS_CHIP_AXP2101
+#include "XPowersLib.h"
+XPowersPMU PMU;
 
-// トピック設計 (マルチテナント対応):
-//   carpal/{tenant_id}/{device_id}/location
-//   carpal/{tenant_id}/{device_id}/status  … LWTでオフライン通知
+// ===== MQTT トピック (docs/contract.md 準拠) =====
 String TOPIC_LOC, TOPIC_STATUS;
 
-// ============================================================
-// 送信間隔 (適応制御)
-// ============================================================
-const uint32_t INTERVAL_MOVING_MS = 3000;    // 移動中: 3秒間隔
-const uint32_t INTERVAL_IDLE_MS   = 30000;   // 停車中: 30秒間隔
-const float    MOVING_SPEED_KMH   = 5.0;     // 5km/h 以上で「移動中」とみなす
+// ===== 送信間隔 (適応制御) =====
+const uint32_t INTERVAL_MOVING_MS = 3000;
+const uint32_t INTERVAL_IDLE_MS   = 30000;
+const float    MOVING_SPEED_KMH   = 5.0;
+
+// ===== 再接続バックオフ (operations-design §1.1) =====
+uint32_t backoffMs = 1000;
+uint32_t lastAttemptMs = 0;
+
+// ===== クライアント =====
+#if CARPAL_USE_LTE
+TinyGsm       modem(SerialAT);
+TinyGsmClient netClient(modem);
+#else
+#include <WiFiClient.h>
+WiFiClient    netClient;
+TinyGsm       modem(Serial1);
+#endif
+PubSubClient  mqtt(netClient);
 
 // ============================================================
-// グローバル
+// PMU 初期化 — モデム電源 (DC3) と GPSアンテナ電源 (BLDO2)
+// 公式 MinimalModemGPSExample 準拠
 // ============================================================
-TinyGsm        modem(Serial1);
-TinyGsmClient  gsmClient(modem);
-PubSubClient   mqtt(gsmClient);
-
-struct GpsData {
-  double lat = 0.0;
-  double lng = 0.0;
-  float  speedKmh = 0.0;
-  float  hdop = 99.9;
-  int    satellites = 0;
-  bool   valid = false;
-};
-
-GpsData lastFix;                 // 最後に有効だった測位 (ベアリング計算用)
-uint32_t lastPublishMs = 0;
-
-// ============================================================
-// モデム起動
-// ============================================================
-bool modemPowerOn() {
-  // T-SIM7080-S3 は PWR_PIN の High→Low パルスで電源ON
-  pinMode(PWR_PIN, OUTPUT);
-  digitalWrite(PWR_PIN, HIGH);
-  delay(300);
-  digitalWrite(PWR_PIN, LOW);
-  delay(1000);
-
-  Serial.println("Waiting for modem...");
-  for (uint32_t start = millis(); millis() - start < 15000; ) {
-    if (modem.testAT()) return true;
-    delay(200);
+bool pmuInit() {
+  if (!PMU.begin(Wire, 0x5A /*AXP2101_SLAVE_ADDRESS*/, I2C_SDA, I2C_SCL)) {
+    return false;
   }
-  // 応答しない場合は再度電源パルス
-  digitalWrite(PWR_PIN, HIGH); delay(1000);
-  digitalWrite(PWR_PIN, LOW);
-  for (uint32_t start = millis(); millis() - start < 15000; ) {
-    if (modem.testAT()) return true;
-    delay(200);
-  }
-  return false;
+  // 電源サイクル時はモデム電源を一度OFFにしてクリーンに再起動
+  PMU.disableDC3();
+  delay(200);
+  PMU.setDC3Voltage(3000);   // SIM7080G メイン電源 2700~3400mV
+  PMU.enableDC3();
+
+  PMU.setBLDO2Voltage(3300);
+  PMU.enableBLDO2();         // GPSアンテナ電源 — GPSに必須
+
+  PMU.disableTSPinMeasure(); // TSピン検出はOFFにしないと充電できない
+  return true;
 }
 
 // ============================================================
-// GNSS (SIM7080G 内蔵) 取得
+// モデム起動 — PWRKEY パルス (公式のシーケンス準拠)
 // ============================================================
-bool readGnss(GpsData &out) {
-  if (!modem.enableGNSS(1, 24)) {   // enable=1, GNSS system: GPS+GLONASS+BEIDOU (bitmask 24 → 必要に応じ調整)
-    // すでに有効な場合は失敗することがあるため無視して継続
-  }
-  float lat = 0, lng = 0, speed = 0, hdop = 99;
-  int    sats = 0;
-  bool   ok = modem.getGNSS(&lat, &lng, &speed, nullptr, nullptr, nullptr, &sats);
-  // TinyGSM の実装により引数が異なる場合は getGNSS のシグネチャに合わせて調整してください。
-  if (!ok || (lat == 0.0 && lng == 0.0)) return false;
+bool modemPowerOn() {
+  Serial1.begin(115200, SERIAL_8N1, BOARD_MODEM_RXD_PIN, BOARD_MODEM_TXD_PIN);
 
-  out.lat       = lat;
-  out.lng       = lng;
-  out.speedKmh  = speed;
-  out.satellites = sats;
-  out.valid     = true;
+  pinMode(BOARD_MODEM_PWR_PIN, OUTPUT);
+  digitalWrite(BOARD_MODEM_PWR_PIN, LOW);
+  delay(100);
+  digitalWrite(BOARD_MODEM_PWR_PIN, HIGH);
+  delay(1000);
+  digitalWrite(BOARD_MODEM_PWR_PIN, LOW);
+
+  // DTR=LOW でスリープ抑止
+  pinMode(BOARD_MODEM_DTR_PIN, OUTPUT);
+  digitalWrite(BOARD_MODEM_DTR_PIN, LOW);
+
+  int retry = 0;
+  while (!modem.testAT(1000)) {
+    Serial.print(".");
+    if (retry++ > 15) {
+      digitalWrite(BOARD_MODEM_PWR_PIN, LOW);  delay(100);
+      digitalWrite(BOARD_MODEM_PWR_PIN, HIGH); delay(1000);
+      digitalWrite(BOARD_MODEM_PWR_PIN, LOW);
+      retry = 0;
+      Serial.println("\nRetry start modem.");
+    }
+    delay(500);
+  }
   return true;
+}
+
+// ============================================================
+// GPS → epoch ms (docs/contract.md §2: ts は GNSS UTC から生成)
+// ============================================================
+long long gpsEpochMs(int y, int mo, int d, int h, int mi, int s) {
+  if (y < 100) y += 2000;               // 2桁年対策
+  struct tm t = {};
+  t.tm_year = y - 1900; t.tm_mon = mo - 1; t.tm_mday = d;
+  t.tm_hour = h; t.tm_min = mi; t.tm_sec = s;
+  time_t epoch = mktime(&t);            // setup で TZ=UTC 済
+  return (epoch > 1577836800L) ? (long long)epoch * 1000LL : 0; // 2020年以降のみ有効
 }
 
 // ============================================================
 // MQTT
 // ============================================================
-void mqttCallback(char* topic, byte* payload, unsigned int len) {
-  // 本ファームは Subscribe を使わないが、コマンド受信時はここで処理
-}
-
-// ============================================================
-// 時刻 (epoch ms) — 監査 H-3 対応
-// NITZ (モバイル網の時刻) から取得。取得できない場合は ts を省略し、
-// サーバ (ingest) が受信時刻で代用する。millis() は使わない (49日周回問題)。
-// ============================================================
-long epochSeconds() {
-  // TinyGSM: "YY/MM/DD,HH:MM:SS+zz" 形式
-  String dt = modem.getGSMDateTime(DATETIME_FULL);
-  if (dt.length() < 20) return 0;
-  int y  = dt.substring(0, 2).toInt() + 2000;
-  int mo = dt.substring(3, 5).toInt();
-  int d  = dt.substring(6, 8).toInt();
-  int h  = dt.substring(9, 11).toInt();
-  int mi = dt.substring(12, 14).toInt();
-  int se = dt.substring(15, 17).toInt();
-  struct tm t = {};
-  t.tm_year = y - 1900; t.tm_mon = mo - 1; t.tm_mday = d;
-  t.tm_hour = h; t.tm_min = mi; t.tm_sec = se;
-  time_t epoch = mktime(&t);
-  return (epoch > 1000000000L) ? (long)epoch : 0;   // 妥当性チェック
-}
-
-void publishLocation(const GpsData &fix) {
-  JsonDocument doc;
-  doc["id"]     = DEVICE_ID;
-  doc["lat"]    = serialized(String(fix.lat, 6));
-  doc["lng"]    = serialized(String(fix.lng, 6));
-  doc["spd"]    = fix.speedKmh;
-  long es = epochSeconds();
-  if (es > 0) {
-    doc["ts"] = (long long)es * 1000LL;    // epoch ms
-  }                                        // 取得できない場合は省略 (サーバ側で受信時刻使用)
-  if (lastFix.valid) {
-    doc["brg"]   = bearingDeg(lastFix.lat, lastFix.lng, fix.lat, fix.lng); // 進行方向
-  }
-  doc["sats"]   = fix.satellites;
-
-  char buf[256];
-  size_t n = serializeJson(doc, buf, sizeof(buf));
-  bool ok = mqtt.publish(TOPIC_LOC.c_str(), buf, n);
-  Serial.printf("[MQTT] publish(%s): %s  %s\n", TOPIC_LOC.c_str(), ok ? "OK" : "FAIL", buf);
-}
-
 bool mqttEnsureConnected() {
   if (mqtt.connected()) return true;
-  Serial.print("[MQTT] connecting... ");
-  String willMsg = String("{\"id\":\"") + DEVICE_ID + "\",\"online\":false}";
-  bool ok = mqtt.connect(DEVICE_ID, DEVICE_ID, DEVICE_SECRET,
-                         TOPIC_STATUS.c_str(), 1, true, willMsg.c_str());
+  if (millis() - lastAttemptMs < backoffMs) return false;   // 指数バックオフ
+  lastAttemptMs = millis();
+
+  Serial.printf("[MQTT] connecting to %s:%u (backoff %ums)...\n",
+                MQTT_HOST, MQTT_PORT, backoffMs);
+  String will = String("{\"id\":\"") + CARPAL_DEVICE_ID + "\",\"online\":false}";
+  bool ok = mqtt.connect(CARPAL_DEVICE_ID, MQTT_USER, MQTT_PASS,
+                         TOPIC_STATUS.c_str(), 1, true, will.c_str());
   if (ok) {
-    Serial.println("OK");
-    // LWT の逆 = オンライン通知
-    String online = String("{\"id\":\"") + DEVICE_ID + "\",\"online\":true}";
+    Serial.println("[MQTT] connected");
+    backoffMs = 1000;   // 成功でリセット
+    String online = String("{\"id\":\"") + CARPAL_DEVICE_ID + "\",\"online\":true}";
     mqtt.publish(TOPIC_STATUS.c_str(), online.c_str(), true);
   } else {
-    Serial.printf("FAIL state=%d\n", mqtt.state());
+    Serial.printf("[MQTT] failed state=%d\n", mqtt.state());
+    backoffMs = (backoffMs < 60000) ? backoffMs * 2 : 60000;   // 1s→60s
   }
   return ok;
 }
 
-// ============================================================
-// ベアリング計算 (2点間の進行方向)
-// ============================================================
 float bearingDeg(double lat1, double lng1, double lat2, double lng2) {
   double rad = PI / 180.0;
   double y = sin((lng2 - lng1) * rad) * cos(lat2 * rad);
   double x = cos(lat1 * rad) * sin(lat2 * rad)
            - sin(lat1 * rad) * cos(lat2 * rad) * cos((lng2 - lng1) * rad);
-  double deg = atan2(y, x) / rad;
-  return (float)fmod(deg + 360.0, 360.0);
+  return (float)fmod(atan2(y, x) / rad + 360.0, 360.0);
+}
+
+// ============================================================
+// 位置パブリッシュ (docs/contract.md §2 スキーマ)
+// ============================================================
+void publishLocation(double lat, double lng, float kmh, float brg, int usat,
+                     long long tsMs) {
+  JsonDocument doc;
+  doc["id"]  = CARPAL_DEVICE_ID;
+  doc["lat"] = serialized(String(lat, 6));
+  doc["lng"] = serialized(String(lng, 6));
+  doc["spd"] = kmh;
+  if (brg >= 0) doc["brg"] = brg;
+  if (usat > 0) doc["sats"] = usat;
+  if (tsMs > 0) doc["ts"]   = tsMs;
+
+  char buf[256];
+  size_t n = serializeJson(doc, buf, sizeof(buf));
+  bool ok = mqtt.publish(TOPIC_LOC.c_str(), buf, n);
+  Serial.printf("[PUB] %s %s\n", ok ? "OK" : "FAIL", buf);
 }
 
 // ============================================================
 // setup / loop
 // ============================================================
-void setup() {
-  Serial.begin(UART_BAUD);
-  delay(2000);
+double lastLat = 0, lastLng = 0;
+bool   lastFixValid = false;
+uint32_t lastPublishMs = 0;
 
-  // 時刻解釈を UTC 固定にする (監査 N-2 対策: NITZ は UTC を返すため
-  // ローカルTZの mktime で解釈すると JST 環境で +9h ずれる)
+void setup() {
+  Serial.begin(115200);
+  // GNSS は UTC を返すため mktime の解釈を UTC 固定に
   setenv("TZ", "UTC", 1);
   tzset();
+  delay(2500);
 
-  Serial1.begin(MODEM_BAUD, SERIAL_8N1, PIN_RX, PIN_TX);
-  pinMode(PIN_DTR, OUTPUT);
-  digitalWrite(PIN_DTR, LOW);   // DTR=LOW でスリープ抑止
-  delay(100);
-
-  TOPIC_LOC    = String("carpal/") + TENANT_ID + "/" + DEVICE_ID + "/location";
-  TOPIC_STATUS = String("carpal/") + TENANT_ID + "/" + DEVICE_ID + "/status";
+  TOPIC_LOC    = String("carpal/") + CARPAL_TENANT_ID + "/" + CARPAL_DEVICE_ID + "/location";
+  TOPIC_STATUS = String("carpal/") + CARPAL_TENANT_ID + "/" + CARPAL_DEVICE_ID + "/status";
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
-  mqtt.setCallback(mqttCallback);
-  mqtt.setKeepAlive(30);
-  mqtt.setSocketTimeout(10);
+  // NOTE: LilyGO lib の PubSubClient 2.7 には setKeepAlive/setSocketTimeout が無い
+  // (デフォルト KeepAlive 15秒・タイムアウト 15秒を使用。LWT検出は15秒後)
 
-  if (!modemPowerOn()) {
-    Serial.println("Modem init failed. Halt.");
+#if CARPAL_USE_LTE
+  // ---- LTE モード: PMUでモデム/GPS電源を確保してからモデム起動 ----
+  if (!pmuInit()) {
+    Serial.println("[PMU] init FAILED — halting (check wiring/board model)");
     while (true) delay(10000);
   }
-
-  Serial.print("Modem: ");
+  Serial.println("[PMU] AXP2101 OK (modem DC3=3.0V, GPS BLDO2=3.3V)");
+  modemPowerOn();
+  Serial.print("[MODEM] ");
   Serial.println(modem.getModemInfo());
-
-  // ネットワーク登録
-  if (!modem.gprsConnect(APN, "", "")) {
-    Serial.println("LTE connect failed. Retry in loop.");
+#else
+  // ---- ベンチ: WiFi で LAN の Mosquitto へ。GPS用に PMU の BLDO2 も有効化 ----
+  if (pmuInit()) {
+    Serial.println("[PMU] AXP2101 OK (GPS antenna power BLDO2=3.3V)");
   } else {
-    Serial.print("LTE OK, signal: ");
-    Serial.println(modem.getSignalQuality());
+    Serial.println("[PMU] init FAILED — GPS antenna power unavailable");
   }
-
-  modem.enableGNSS(1, 24);   // GNSS 有効化
+  Serial.printf("[WiFi] connecting to %s", WIFI_SSID);
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  uint32_t t0 = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 20000) {
+    delay(400);
+    Serial.print(".");
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.printf("\n[WiFi] connected, IP=%s  RSSI=%d dBm\n",
+                  WiFi.localIP().toString().c_str(), WiFi.RSSI());
+  } else {
+    Serial.printf("\n[WiFi] FAILED status=%d (1=SSID未検出/6=切断: パス相違・5GHz専用SSIDに注意)\n",
+                  WiFi.status());
+  }
+#endif
 }
 
 void loop() {
-  // ネットワーク断対応
+#if CARPAL_USE_LTE
   if (!modem.isNetworkConnected()) {
     Serial.println("[NET] reconnecting...");
     modem.gprsConnect(APN, "", "");
   }
+#else
+  // WiFi 再接続: 接続試行中に reconnect() を連打すると失敗するため10秒クールダウン
+  static uint32_t lastWifiRetry = 0;
+  if (WiFi.status() != WL_CONNECTED && millis() - lastWifiRetry > 10000) {
+    lastWifiRetry = millis();
+    Serial.printf("[WiFi] retry (status=%d)\n", WiFi.status());
+    WiFi.reconnect();
+  }
+#endif
 
   if (!mqttEnsureConnected()) {
     mqtt.loop();
-    delay(2000);
+    delay(1000);
     return;
   }
 
-  GpsData fix;
-  bool have = readGnss(fix);
+  // ---- GNSS 取得 (TinyGSM getGPS: 13引数・速度はノット) ----
+  float lat2 = 0, lon2 = 0, speed2 = 0, alt2 = 0, accuracy2 = 0;
+  int vsat2 = 0, usat2 = 0, y2 = 0, mo2 = 0, d2 = 0, h2 = 0, mi2 = 0, s2 = 0;
 
-  if (have) {
-    bool moving = fix.speedKmh >= MOVING_SPEED_KMH;
-    uint32_t interval = moving ? INTERVAL_MOVING_MS : INTERVAL_IDLE_MS;
-
-    if (millis() - lastPublishMs >= interval) {
-      publishLocation(fix);
-      lastPublishMs = millis();
-      lastFix = fix;
+  static bool modemReady = false;
+  if (!modemReady) {
+    Serial.println("[MODEM] power-on for GNSS...");
+    modemPowerOn();
+    Serial.print("[MODEM] ");
+    Serial.println(modem.getModemInfo());
+    if (!modem.enableGPS()) {
+      Serial.println("[GNSS] enableGPS failed — retry in 30s");
+      delay(30000);
+      return;
     }
-  } else {
-    Serial.println("[GNSS] no fix yet...");
+    Serial.println("[GNSS] enabled, waiting for fix...");
+    modemReady = true;
+  }
+
+  bool have = modem.getGPS(&lat2, &lon2, &speed2, &alt2, &vsat2, &usat2,
+                           &accuracy2, &y2, &mo2, &d2, &h2, &mi2, &s2);
+
+  if (!have || (lat2 == 0.0 && lon2 == 0.0)) {
+    static uint32_t lastWait = 0;
+    if (millis() - lastWait > 10000) {
+      Serial.println("[GNSS] waiting for fix... (屋外/窓際で改善します)");
+      lastWait = millis();
+    }
+    mqtt.loop();
     delay(1000);
+    return;
+  }
+
+  float kmh = speed2 * 1.852;   // ノット → km/h
+  float brg = lastFixValid ? bearingDeg(lastLat, lastLng, lat2, lon2) : -1.0f;
+
+  bool moving = kmh >= MOVING_SPEED_KMH;
+  uint32_t interval = moving ? INTERVAL_MOVING_MS : INTERVAL_IDLE_MS;
+  if (millis() - lastPublishMs >= interval) {
+    long long tsMs = gpsEpochMs(y2, mo2, d2, h2, mi2, s2);
+    publishLocation(lat2, lon2, kmh, brg, usat2, tsMs);
+    lastPublishMs = millis();
+    lastLat = lat2; lastLng = lon2; lastFixValid = true;
   }
 
   mqtt.loop();
+  delay(500);
 }

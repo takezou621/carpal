@@ -1,5 +1,6 @@
 # Secrets / credentials (絶対にコミットしない)
 docker/mosquitto/passwd
+firmware/carpal_tracker/secrets.h
 *.pem
 *.key
 

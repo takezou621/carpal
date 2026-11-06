@@ -41,17 +41,19 @@ LILYGO T-SIM7080-S3 を用いたリアルタイム車両追跡システム（最
 
 ## 2. コンポーネント設計
 
-### 2.1 車載デバイス（T-SIM7080-S3 ファームウェア）
+### 2.1 車載デバイス（T-SIM7080G-S3 ファームウェア）
 
 | 項目 | 設計 |
 |---|---|
-| 測位 | SIM7080G 内蔵 GNSS。TinyGSM の `getGNSS()` で緯度経度・速度・衛星数を取得 |
-| 測位判定 | lat/lng が (0,0) の間は「未測位」とし送信しない。HDOP/衛星数で品質判定 |
-| 通信 | LTE Cat-M。APN 接続 → TinyGsmClient → PubSubClient (TCP 1883) |
+| ボード | **LILYGO T-SIM7080G-S3** (実機確認済み 2026-11-06)。モデム/GPS電源は **AXP2101 PMU 経由** (DC3=3.0V, GPSアンテナ BLDO2=3.3V)。ピン: UART RX=4/TX=5, PWRKEY=41, DTR=42, I2C SDA=15/SCL=7。公式リポジトリの utilities.h / MinimalModemGPSExample に準拠 |
+| 測位 | SIM7080G 内蔵 GNSS。TinyGSM `enableGPS()` + `getGPS()` (13引数・速度はノット→km/h変換)。**GPS UTC から `ts` (epoch ms) を生成** |
+| 測位判定 | lat/lng が (0,0) の間は「未測位」とし送信しない。衛星数 (`usat`) を `sats` に格納 |
+| 接続経路 | `CARPAL_USE_LTE`: 0=**WiFi (ベンチ検証用)** / 1=LTE Cat-M (実車・SIM到着後)。トピック・JSON契約は同一 (contract.md) |
+| 認証情報 | `firmware/carpal_tracker/secrets.h` (**gitignore済み・コミット禁止**)。雛形は secrets.h.example |
 | 送信ポリシー | **移動中 (≥5km/h): 3秒間隔 / 停車中: 30秒間隔**。帯域・電池・パケット課金の削減 |
 | 進行方向 | デバイス側で前回測位とのベアリングを計算し `brg` に格納。同時にフロント側でも差分計算可能（フォールバック二段構え） |
 | 死活監視 | MQTT LWT (Last Will) で `carpal/{tenant}/{device}/status` に `online:false` を自動発報。接続復帰時に `online:true` を Retain 付きで発報 |
-| 再接続 | ネットワーク断・MQTT断とも loop 内で自動検出・再接続。KeepAlive 30秒 |
+| 再接続 | ネットワーク断・MQTT断とも loop 内で自動検出・再接続 (**指数バックオフ 1s→60s**)。WiFi再接続は10秒クールダウン |
 
 ### 2.2 ブローカー（Mosquitto / Proxmox Docker）
 
@@ -205,7 +207,7 @@ carpal/
 | 2-b | バックエンド基盤 (PostgreSQL + API + ingest + Caddy) | 🔜 次 (multi-tenant §8 / backend-design) |
 | 2-c | テナント/デバイス管理 API・JWT 認証・go-auth | 未着手 |
 | 2-d | フロント UI (ログイン・テナントスイッチャー・ui-design M1〜M3) | 未着手 |
-| 2-e | ESP32 実機ファーム検証（デバイス到着後） | 未着手 (ボード未入手) |
+| 2-e | ESP32 実機検証 | 🔄 進行中 (2026-11-06: 実機は **T-SIM7080G-S3** と判明。ファームを公式準拠に改修し、WiFi→LAN Mosquitto 接続・status retain 発報まで確認。GPS fix は屋外で確認、LTE は SIM 到着後) |
 | 3 | 外部公開 (WSS)、Admin コンソール、OTA、SaaS 化 (課金) | 未着手 |
 
 ### リスクと対処
