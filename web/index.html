@@ -174,7 +174,10 @@
       }
       historyBtn.disabled = true;
       try {
-        const res = await fetch(`http://${location.hostname}:3000/api/history?hours=24`);
+        // https 配信時は同一オリジン (/api/history → ingest) 、LANベンチは ingest 直結
+        const HIST_BASE = location.protocol === 'https:'
+          ? '' : `http://${location.hostname}:3000`;
+        const res = await fetch(`${HIST_BASE}/api/history?hours=24`);
         if (!res.ok) throw new Error(`API ${res.status}`);
         const { devices } = await res.json();
         for (const [id, points] of Object.entries(devices)) {

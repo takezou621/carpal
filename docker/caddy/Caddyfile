@@ -1,0 +1,31 @@
+# carpal 公開エントリ (Cloudflare Tunnel のオリジンとして動作、TLS は Cloudflare エッジで終端)
+# パス設計: docs/backend-design.md §1
+:80 {
+	root * /srv/web
+	encode gzip
+
+	# MQTT over WebSockets (ブラウザ) — パスはそのまま Mosquitto ws へ
+	# NOTE: /mqtt* のプレフィックス一致だと /mqtt.js (静的ファイル) まで転送されるため
+	# 完全一致 /mqtt と /mqtt/* のみに限定する
+	handle /mqtt {
+		reverse_proxy host.docker.internal:9001
+	}
+	handle /mqtt/* {
+		reverse_proxy host.docker.internal:9001
+	}
+	# 履歴・診断ログ API (ingest :3000)
+	handle /api/history* {
+		reverse_proxy host.docker.internal:3000
+	}
+	handle /api/logs* {
+		reverse_proxy host.docker.internal:3000
+	}
+	# メンバー/テナント/デバイス API (Fastify :3001)
+	handle /api/* {
+		reverse_proxy host.docker.internal:3001
+	}
+	# web 静的配信 (web/index.html, mqtt.js, api.js, config.local.js ...)
+	handle {
+		file_server
+	}
+}

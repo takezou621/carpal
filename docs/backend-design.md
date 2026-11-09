@@ -15,14 +15,17 @@
 ## 1. プロセス構成
 
 ```
-docker-compose (Proxmox 1ホスト)
-├── caddy      :443  TLS終端。/ → web静的, /api → api:3000, /mqtt → mosquitto:9001 (ws)
-├── mosquitto  :1883 / :9001 (acl_file)
-├── api        Fastify (Node 22, ESM)。テナント管理・JWT発行・履歴照会
-├── ingest     mqtt クライアント。carpal/+/+/location を購読 → PostgreSQL
-├── postgres   16 (volume, 月次パーティション)
-├── web        静的ファイル (caddy から配信)
-└── simulator  開発用
+Proxmox 1ホスト (LXC carpal-backend) — 実機構成 (2026-11-09 構築)
+├── cloudflared  Cloudflare Tunnel (car.takezou.com)。TLS は Cloudflare エッジで終端
+├── caddy        :80   パスルーティング。/ → web静的, /api → api:3001,
+│                      /api/history, /api/logs → ingest:3000, /mqtt → mosquitto:9001 (ws)
+│                      (docker/caddy/docker-compose.yml + Caddyfile)
+├── mosquitto    :1883 / :9001 (dynsec 動的認証)
+├── api          Fastify (Node 22, ESM)。テナント管理・JWT発行・dynsec プロビジョニング
+├── ingest       mqtt クライアント。carpal/+/+/location を購読 → PostgreSQL + 履歴API
+├── postgres     16 (volume, 単一テーブル)
+├── web          静的ファイル (caddy から配信。https 時は同一オリジン /api, /mqtt を使用)
+└── simulator    開発用
 ```
 
 - **api と ingest は別プロセス**（障害・スケール特性が異なるため。multi-tenant §4.1）

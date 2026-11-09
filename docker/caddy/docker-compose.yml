@@ -1,0 +1,31 @@
+# carpal 公開エントリ (Caddy + Cloudflare Tunnel)
+# - Caddy がパスルーティング: / → web静的, /api/* → api, /api/history|logs → ingest, /mqtt → Mosquitto ws
+# - cloudflared が car.takezou.com を Caddy へ転送 (トンネル認証情報は gitignore)
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: carpal-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../../web:/srv/web:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: carpal-cloudflared
+    restart: unless-stopped
+    command: ["tunnel", "--config", "/etc/cloudflared/config.yml", "run", "carpal"]
+    volumes:
+      - ./cloudflared:/etc/cloudflared:ro
+    depends_on:
+      - caddy
+
+volumes:
+  caddy-data:
+  caddy-config:

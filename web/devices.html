@@ -116,9 +116,7 @@
     const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
     if (!TID && auth.sys) {
-      const d = await fetch(`http://${location.hostname}:3001/api/admin/tenants`, {
-        headers: { Authorization: `Bearer ${auth.access}` },
-      }).then(r => r.json());
+      const d = await apiFetch('/api/admin/tenants').then(r => r.json());
       TID = (d.tenants.find(t => t.status === 'active') || d.tenants[0])?.id || null;
       sessionStorage.setItem('carpal.effectiveTid', TID || '');
       console.log('[devices] effective tenant:', TID);
@@ -245,9 +243,7 @@
       const sel = $('tenantSel');
       let tenants = [];
       if (auth.sys) {
-        const d = await fetch(`http://${location.hostname}:3001/api/admin/tenants`, {
-          headers: { Authorization: `Bearer ${auth.access}` },
-        }).then(r => r.json());
+        const d = await apiFetch('/api/admin/tenants').then(r => r.json());
         tenants = d.tenants.map(t => ({ id: t.id, name: t.name, status: t.status }));
       } else {
         tenants = auth.memberships.map(m => ({ id: m.tenant_id, name: m.name || m.tenant_id, status: m.status || 'active' }));

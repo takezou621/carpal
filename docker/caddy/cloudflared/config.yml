@@ -1,0 +1,10 @@
+# carpal 用 Cloudflare Tunnel (ローカル管理) の ingress 設定
+# 認証情報ファイル cloudflared/carpal.json は `cloudflared tunnel create carpal` で生成
+# (トンネル秘密鍵を含むため gitignore 対象 — コミット禁止)
+tunnel: carpal
+credentials-file: /etc/cloudflared/carpal.json
+
+ingress:
+  - hostname: car.takezou.com
+    service: http://carpal-caddy:80
+  - service: http_status:404
