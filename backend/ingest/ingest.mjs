@@ -164,7 +164,18 @@ mqttClient.on('message', async (topic, payload) => {
 });
 
 mqttClient.on('reconnect', () => console.log('[ingest] reconnecting...'));
-mqttClient.on('error', (e) => console.error('[ingest] mqtt error:', e.message));
+// NOTE: mqtt.js は CONNACK で拒否された場合 (例: webuser 未プロビジョニングの起動直後)
+// 自動再接続しないケースがあるため、未接続なら5秒間隔で明示的に再接続する。
+let mqttRetryTimer = null;
+mqttClient.on('error', (e) => {
+  console.error('[ingest] mqtt error:', e.message);
+  if (!mqttClient.connected && !mqttRetryTimer) {
+    mqttRetryTimer = setTimeout(() => {
+      mqttRetryTimer = null;
+      try { mqttClient.reconnect(); } catch { /* already connecting */ }
+    }, 5000);
+  }
+});
 
 // ---------- 履歴 API ----------
 const server = http.createServer(async (req, res) => {

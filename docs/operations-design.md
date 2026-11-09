@@ -10,7 +10,7 @@
 |---|---|---|
 | デバイス | TCP切断 → 再接続 | **指数バックオフ必須**: 1s, 2s, 4s ... 最大60s（全台が同時に再接続するサンダリングハードを防ぐ。ファームに jitter 付き backoff を実装する） |
 | ブラウザ | mqtt.js が3秒固定で再接続 | 接続数が少ないため許容。SaaS化時に backoff 化 |
-| ingest | persistent session (QoS1) により再接続後、未取得メッセージを再配信 | 重複は `UNIQUE(device_id, recorded_at)` Upsert で冪等化（contract.md §4） |
+| ingest | persistent session (QoS1) により再接続後、未取得メッセージを再配信 | 重複は `UNIQUE(device_id, recorded_at)` Upsert で冪等化（contract.md §4）。**CONNACK 拒否時（webuser 未プロビジョニングの起動直後など）は mqtt.js が自動再接続しないため、ingest 側で 5秒間隔の明示再接続を実装済み（`ingest.mjs`）** |
 | データ | Retain（status）と persistent session は volume で永続化 | volume 消失時は「全車両一時オフライン表示」で自己修復（location 再受信で復帰） |
 
 ### 1.2 PostgreSQL 障害
