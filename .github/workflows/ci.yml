@@ -46,8 +46,11 @@ jobs:
         run: |
           docker compose -f docker/mosquitto/docker-compose.yml up -d
           sleep 2
+          # パスワードはホスト側で抽出する ($(...) をコンテナ内で評価すると
+          # docker/backend/.env がコンテナに無く空パスワードになる)
+          DYNSEC_PWD=$(grep '^DYNSEC_ADMIN_PASSWORD=' docker/backend/.env | cut -d= -f2)
           docker run --rm -v carpal-mosquitto_mosquitto-data:/mosquitto/data eclipse-mosquitto:2 \
-            sh -c "mosquitto_ctrl dynsec init /mosquitto/data/dynamic-security.json admin \$(grep '^DYNSEC_ADMIN_PASSWORD=' docker/backend/.env | cut -d= -f2)" || true
+            sh -c "mosquitto_ctrl dynsec init /mosquitto/data/dynamic-security.json admin '$DYNSEC_PWD'" || true
           # dynsec ファイルが Mosquitto 起動前に無い場合に備えて再初期化→再起動
           docker compose -f docker/mosquitto/docker-compose.yml restart
       - name: バックエンド起動 (postgres + ingest + api)
