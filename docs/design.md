@@ -208,7 +208,7 @@ carpal/
 | 2-b | バックエンド基盤 (PostgreSQL + API + ingest + Caddy) | 🔄 最小版完了 (2026-11-06: ingest+PostgreSQL+履歴APIを実装、移動履歴の地図表示を実機で検証済み。Fastify/JWT/Caddy は後続) |
 | 2-c | テナント/デバイス管理 API・JWT 認証・MQTT動的認証 | ✅ コア完了 (2026-11-06: Fastify+JWT+監査ログ+secret発行/ローテーション+suspend と **dynsec 動的MQTT認証** (API登録→即MQTT利用可) を実装、E2E 18/18 + プロビジョニング9/9 PASS。メンバー招待・RS256移行は後続) |
 | 2-d | フロント UI (ログイン・テナントスイッチャー・メンバー管理・履歴表示) | ✅ コア完了 (2026-11-07: ログイン+デバイス管理+メンバー管理+テナント切替+履歴表示+自動センタリング、ヘッドレスE2E PASS。残: モバイル最適化・ダークモード) |
-| 2-e | ESP32 実機検証 | 🔄 進行中 (2026-11-06: PMUアドレス異常 (0x5A→0x34) を解明・対応し、WiFi→LAN Mosquitto接続・モデムAT応答・GNSS測位開始まで確認。GPS fix は屋外で確認。2026-11-10: Soracom plan-D (D-500MB, ドコモ網 Cat.M1) SIM を装着し LTE 実装完了 (Beam MQTT エントリポイント経由・APN soracom.io・登録待ち+PDPリフレッシュ+モデム電源リサイクルの自己復帰込み)。Beam→Mosquitto 接続は実機で複数回確認。既知事象: GNSS 捕捉中に LTE TCP が約46秒で切断 (operations-design.md §5.2) — GPS fix 後の安定性は実車確認待ち) |
+| 2-e | ESP32 実機検証 | 🔄 進行中 (2026-11-06: PMUアドレス異常 (0x5A→0x34) を解明・対応し、WiFi→LAN Mosquitto接続・モデムAT応答・GNSS測位開始まで確認。GPS fix は屋外で確認。2026-11-10: Soracom plan-D (D-500MB, ドコモ網 Cat.M1) SIM を装着し LTE 実装完了 (Beam MQTT エントリポイント経由・APN soracom.io・登録待ち+PDPリフレッシュ+モデム電源リサイクルの自己復帰込み)。Beam→Mosquitto 接続は実機で複数回確認。既知事象: GNSS 捕捉中に LTE TCP が約46秒で切断 (operations-design.md §5.2) — ただし窓辺設置で GPS fix 後は SORACOM API 監視により **約8時間連続 online** を確認 (2026-11-10 23:29 → 翌 07:30)。実車走行中の送信 (移動中 3 秒間隔・LWT) は確認待ち) |
 | 3 | Admin コンソール、OTA、SaaS 化 (課金)、履歴/ログ API の認証付き公開、テナント単位 MQTT 認証 | 未着手 (外部公開 WSS / 8883 TLS は 2026-11-09/10 に先行実装。履歴/ログは Caddy で 403 遮断中) |
 
 ### リスクと対処
