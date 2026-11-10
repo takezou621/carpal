@@ -44,15 +44,19 @@ jobs:
           printf 'LEGACY_MQTT_USERS=car01:ci-car01-pass\n' >> docker/backend/.env
       - name: Mosquitto 起動 (dynsec 初期化込み)
         run: |
-          docker compose -f docker/mosquitto/docker-compose.yml up -d
+          # プロジェクト名を明示 (ボリューム名を mosquitto_mosquitto-data に固定)
+          docker compose -p mosquitto -f docker/mosquitto/docker-compose.yml up -d
           sleep 2
           # パスワードはホスト側で抽出する ($(...) をコンテナ内で評価すると
           # docker/backend/.env がコンテナに無く空パスワードになる)
           DYNSEC_PWD=$(grep '^DYNSEC_ADMIN_PASSWORD=' docker/backend/.env | cut -d= -f2)
-          docker run --rm -v carpal-mosquitto_mosquitto-data:/mosquitto/data eclipse-mosquitto:2 \
-            sh -c "mosquitto_ctrl dynsec init /mosquitto/data/dynamic-security.json admin '$DYNSEC_PWD'" || true
-          # dynsec ファイルが Mosquitto 起動前に無い場合に備えて再初期化→再起動
-          docker compose -f docker/mosquitto/docker-compose.yml restart
+          # 初回起動時にプラグインが自動生成する dynsec 設定 (ランダム admin) を
+          # 削除してから、既知パスワードで admin を初期化し直す
+          docker run --rm -v mosquitto_mosquitto-data:/mosquitto/data eclipse-mosquitto:2 \
+            sh -c "rm -f /mosquitto/data/dynamic-security.json /mosquitto/data/dynamic-security.json.pw && \
+                   mosquitto_ctrl dynsec init /mosquitto/data/dynamic-security.json admin '$DYNSEC_PWD'"
+          # 初期化した設定をロードさせるため再起動
+          docker compose -p mosquitto -f docker/mosquitto/docker-compose.yml restart
       - name: バックエンド起動 (postgres + ingest + api)
         run: |
           docker compose -f docker/backend/docker-compose.yml up -d --build
