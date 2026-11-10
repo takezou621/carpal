@@ -40,3 +40,6 @@ docker/backend/.env
 
 # Cloudflare Tunnel 認証情報 (トンネル秘密鍵を含む)
 docker/caddy/cloudflared/*.json
+
+# SAM デバッグ用認証キー (一時・コミット禁止)
+secret.txt

@@ -20,7 +20,7 @@ Proxmox 1ホスト (LXC carpal-backend) — 実機構成 (2026-11-09 構築)
 ├── caddy        :80   パスルーティング。/ → web静的, /api → api:3001,
 │                      /api/history, /api/logs → ingest:3000, /mqtt → mosquitto:9001 (ws)
 │                      (docker/caddy/docker-compose.yml + Caddyfile)
-├── mosquitto    :1883 / :9001 (dynsec 動的認証)
+├── mosquitto    :1883 / :9001 / :8883 TLS (dynsec 動的認証。8883 は屋外デバイス用)
 ├── api          Fastify (Node 22, ESM)。テナント管理・JWT発行・dynsec プロビジョニング
 ├── ingest       mqtt クライアント。carpal/+/+/location を購読 → PostgreSQL + 履歴API
 ├── postgres     16 (volume, 単一テーブル)

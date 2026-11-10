@@ -19,7 +19,11 @@ TMPDIR_MQ=$(mktemp -d)
 cp docker/mosquitto/mosquitto.conf "$TMPDIR_MQ/mosquitto.conf"
 cp docker/mosquitto/acl_file "$TMPDIR_MQ/acl_file"
 touch "$TMPDIR_MQ/passwd" && chmod 600 "$TMPDIR_MQ/passwd"
+# include_dir (/mosquitto/conf.d) 用: リポジトリの conf.d (bench は空) を再現
+mkdir -p "$TMPDIR_MQ/conf.d"
+cp docker/mosquitto/conf.d/*.conf "$TMPDIR_MQ/conf.d/" 2>/dev/null || true
 docker run --rm -v "$TMPDIR_MQ":/mosquitto/config:ro \
+  -v "$TMPDIR_MQ/conf.d":/mosquitto/conf.d:ro \
   eclipse-mosquitto:2 mosquitto -c /mosquitto/config/mosquitto.conf -v &
 PID=$!
 sleep 3
