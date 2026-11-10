@@ -4,10 +4,12 @@ services:
     container_name: carpal-postgres
     restart: unless-stopped
     # NOTE: POSTGRES_PASSWORD は初回ボリューム作成時のみ使用。
-    # 実運用パスワードはローテーション済み (docker/backend/.env の PGPASSWORD)。
+    # .env の POSTGRES_PASSWORD (PGPASSWORD と同一値) を使い、未設定時は localdev-only に
+    # フォールバック (LANベンチ用)。これにより新規ホストでもローテーション済みパスワードで
+    # 初期化され、api/ingest の PGPASSWORD と不一致にならない。
     environment:
       POSTGRES_USER: carpal
-      POSTGRES_PASSWORD: localdev-only
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-localdev-only}
       POSTGRES_DB: carpal
     volumes:
       - pgdata:/var/lib/postgresql/data

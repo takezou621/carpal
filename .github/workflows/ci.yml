@@ -20,6 +20,9 @@ jobs:
           node --check backend/ingest/ingest.mjs
           node --check web/api.js
           node --check web/simulator/simulator.js
+      - name: ダミー .env 生成 (compose 検証用・CI のみ)
+        run: |
+          printf 'PGPASSWORD=dummy-pg-password\nPOSTGRES_PASSWORD=dummy-pg-password\nJWT_SECRET=dummy-jwt-secret\nDYNSEC_ADMIN_PASSWORD=dummy-dynsec-password\nMQTT_PASS=dummy-mqtt-password\nADMIN_PASSWORD=dummy-admin-password\nLEGACY_MQTT_USERS=car01:dummy-pass\n' > docker/backend/.env
       - name: compose 設定検証
         run: |
           docker compose -f docker/mosquitto/docker-compose.yml config -q
@@ -31,23 +34,29 @@ jobs:
       - uses: actions/checkout@v4
       - name: テスト用 .env 生成 (CI限界値)
         run: |
-          cd docker/backend
-          cat > .env <<ENV
-          PGPASSWORD=$(openssl rand -hex 16)
-          JWT_SECRET=$(openssl rand -hex 16)
-          DYNSEC_ADMIN_PASSWORD=$(openssl rand -hex 16)
-          MQTT_PASS=$(openssl rand -hex 16)
-          ADMIN_PASSWORD=$(openssl rand -hex 16)
-          LEGACY_MQTT_USERS=car01:ci-car01-pass
-          ENV
+          PG_PWD=$(openssl rand -hex 16)
+          printf 'PGPASSWORD=%s\n' "$PG_PWD" > docker/backend/.env
+          printf 'POSTGRES_PASSWORD=%s\n' "$PG_PWD" >> docker/backend/.env
+          printf 'JWT_SECRET=%s\n' "$(openssl rand -hex 16)" >> docker/backend/.env
+          printf 'DYNSEC_ADMIN_PASSWORD=%s\n' "$(openssl rand -hex 16)" >> docker/backend/.env
+          printf 'MQTT_PASS=%s\n' "$(openssl rand -hex 16)" >> docker/backend/.env
+          printf 'ADMIN_PASSWORD=%s\n' "$(openssl rand -hex 16)" >> docker/backend/.env
+          printf 'LEGACY_MQTT_USERS=car01:ci-car01-pass\n' >> docker/backend/.env
       - name: Mosquitto 起動 (dynsec 初期化込み)
         run: |
-          docker compose -f docker/mosquitto/docker-compose.yml up -d
+          # プロジェクト名を明示 (ボリューム名を mosquitto_mosquitto-data に固定)
+          docker compose -p mosquitto -f docker/mosquitto/docker-compose.yml up -d
           sleep 2
-          docker run --rm -v carpal-mosquitto_mosquitto-data:/mosquitto/data eclipse-mosquitto:2 \
-            sh -c "mosquitto_ctrl dynsec init /mosquitto/data/dynamic-security.json admin \$(grep DYNSEC docker/backend/.env | cut -d= -f2)" || true
-          # dynsec ファイルが Mosquitto 起動前に無い場合に備えて再初期化→再起動
-          docker compose -f docker/mosquitto/docker-compose.yml restart
+          # パスワードはホスト側で抽出する ($(...) をコンテナ内で評価すると
+          # docker/backend/.env がコンテナに無く空パスワードになる)
+          DYNSEC_PWD=$(grep '^DYNSEC_ADMIN_PASSWORD=' docker/backend/.env | cut -d= -f2)
+          # 初回起動時にプラグインが自動生成する dynsec 設定 (ランダム admin) を
+          # 削除してから、既知パスワードで admin を初期化し直す
+          docker run --rm -v mosquitto_mosquitto-data:/mosquitto/data eclipse-mosquitto:2 \
+            sh -c "rm -f /mosquitto/data/dynamic-security.json /mosquitto/data/dynamic-security.json.pw && \
+                   mosquitto_ctrl dynsec init /mosquitto/data/dynamic-security.json admin '$DYNSEC_PWD'"
+          # 初期化した設定をロードさせるため再起動
+          docker compose -p mosquitto -f docker/mosquitto/docker-compose.yml restart
       - name: バックエンド起動 (postgres + ingest + api)
         run: |
           docker compose -f docker/backend/docker-compose.yml up -d --build
@@ -69,10 +78,17 @@ jobs:
           arduino-cli core install esp32:esp32
       - name: LilyGO ライブラリ取得
         run: git clone --depth 1 https://github.com/Xinyuan-LilyGO/LilyGO-T-SIM7080G /tmp/lilygo-libs
+      - name: ArduinoJson v7 インストール (LilyGO 同梱 v5 を除去)
+        run: |
+          rm -rf /tmp/lilygo-libs/lib/ArduinoJson-5
+          arduino-cli lib install ArduinoJson@7.4.2
       - name: ダミー secrets.h 生成
         run: cp firmware/carpal_tracker/secrets.h.example firmware/carpal_tracker/secrets.h
       - name: コンパイル検証
         run: |
-          arduino-cli compile --fqbn "esp32:esp32:esp32s3box:USBMode=hwcdc" \
+          arduino-cli compile --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc,USBMode=hwcdc,FlashSize=16M,PartitionScheme=app3M_fat9M_16MB,PSRAM=opi,FlashMode=qio" \
             --libraries /tmp/lilygo-libs/lib \
             firmware/carpal_tracker
+          arduino-cli compile --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc,USBMode=hwcdc,FlashSize=16M,PartitionScheme=app3M_fat9M_16MB,PSRAM=opi,FlashMode=qio" \
+            --libraries /tmp/lilygo-libs/lib \
+            firmware/ltem_diag

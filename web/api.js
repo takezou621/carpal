@@ -5,7 +5,11 @@
  * docs/backend-design.md 冒頭の遂脱記載を参照)。
  */
 
-const API_BASE = `http://${location.hostname}:3001`;
+// https 配信時 (Caddy / Cloudflare Tunnel) は同一オリジン (/api) を使う。
+// LANベンチでは従来どおり http://{hostname}:3001 へ直接アクセスする。
+const API_BASE = location.protocol === 'https:'
+  ? ''
+  : `http://${location.hostname}:3001`;
 
 export const auth = {
   get access() { return localStorage.getItem('carpal.access_token'); },

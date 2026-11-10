@@ -10,7 +10,7 @@
 |---|---|---|
 | デバイス | TCP切断 → 再接続 | **指数バックオフ必須**: 1s, 2s, 4s ... 最大60s（全台が同時に再接続するサンダリングハードを防ぐ。ファームに jitter 付き backoff を実装する） |
 | ブラウザ | mqtt.js が3秒固定で再接続 | 接続数が少ないため許容。SaaS化時に backoff 化 |
-| ingest | persistent session (QoS1) により再接続後、未取得メッセージを再配信 | 重複は `UNIQUE(device_id, recorded_at)` Upsert で冪等化（contract.md §4） |
+| ingest | persistent session (QoS1) により再接続後、未取得メッセージを再配信 | 重複は `UNIQUE(device_id, recorded_at)` Upsert で冪等化（contract.md §4）。**CONNACK 拒否時（webuser 未プロビジョニングの起動直後など）は mqtt.js が自動再接続しないため、ingest 側で 5秒間隔の明示再接続を実装済み（`ingest.mjs`）** |
 | データ | Retain（status）と persistent session は volume で永続化 | volume 消失時は「全車両一時オフライン表示」で自己修復（location 再受信で復帰） |
 
 ### 1.2 PostgreSQL 障害
@@ -93,9 +93,78 @@ mosquitto_sub -t 'carpal/#' -v -C 3        # メッセージ流通確認
 - Mosquitto のバージョンアップ: ステージング（同構成の別 compose project）で先に起動試験 → 本番
 - ファーム更新: OTA は停車車両のみ段階配信（1台→24時間観察→残台数）。cicd-design.md §6 参照
 
+### 5.1 MQTT TLS 公開 (mqtt.takezou.com:62913) — 2026-11-09 実装済み
+
+- **DNS**: `mqtt.takezou.com` A レコード（DNS-only）= 自宅グローバル IPv4。PVE の
+  `cloudflare-ddns.sh` (systemd timer `cloudflare-ddns.timer`) が `mail` と同一値を追跡
+- **証明書**: Let's Encrypt DNS-01 (Cloudflare API トークン)。LXC carpal-backend の
+  `carpal-cert-renew.timer` が日次で `certbot renew` を実行し、証明書が変わったときのみ
+  mosquitto を再起動 (`/opt/carpal/certs/renew.sh`)
+- **リスナー**: mosquitto `conf.d/tls-8883.conf` (compose override で注入、リポジトリ外)。
+  ベンチは平文 1883 のみ (`docker/mosquitto/conf.d` は空)
+- **ポート転送 (GL.iNet GL-BE9300 / OpenWrt)**: MAP-E 割当ポートは **5568-5583,
+  9664-9679, ... 62912-62927** (16ポート × A=1..15 ブロック, PSID 92 / offset 4)。
+  範囲内の **外部 62913 → 192.168.2.131:8883** を DNAT (`firewall.carpal-mqtt`)。
+  8883 のままだと範囲外のため ISP の BR で破棄される (mail 25/465/587 が外部から
+  不通な理由と同一)
+- **MTU**: MAP-E 実効 MTU 1420 未満が必要なため、LXC 131 の eth0 / docker を
+  **MTU 1400** に統一 (`/etc/network/interfaces`, `/etc/docker/daemon.json`)
+- **ファーム**: WiFi + TLS は `WiFiClientSecure` + ISRG Root X1 検証
+  (`isrgrootx1.h`)。LTE (TinyGSM) は TLS 未対応のため **Soracom Beam に TLS を肩代わり**
+  (§5.2)。Beam 非依存の TLS はモデム内蔵 MQTT AT (AT+CMQTT*, SSL対応) への移行が
+  Phase 2-e の残作業
+- **履歴/ログ API (`/api/history` `/api/logs`)**: ingest 側に認証・テナントフィルタが
+  未実装のため、Caddy 経由 (外部) は **403 応答で遮断** (Phase 3 で JWT 認証を実装する
+  まで公開しない)。LAN では `http://<broker-host>:3000` 直接入力で利用可
+- **web/config.local.js**: webuser 共通パスワードを含むため**公開配信は不可** (Caddy で
+  LAN 以外は 403 応答)。テナント単位 MQTT 認証は Phase 3 課題。暫定緩和として
+  Cloudflare Access によるホスト単位の保護を推奨
+
+### 5.2 SIM / SORACOM 運用 (plan-D + Beam) — 2026-11-10 整備
+
+- **SIM**: Soracom plan-D (D-500MB / ドコモ網)。IMSI `44010…`、対応通信方式は
+  **4G / LTE Cat.M1** (公式サブスクリプション一覧) → SIM7080G (Cat-M1 専用モジュール)
+  で利用可能。NB-IoT は非対応 (§5.2 切り分け手順 3 参照)
+- **APN**: SORACOM 公式設定 — APN `soracom.io` / ユーザー名 `sora` / パスワード `sora`
+  (認証タイプ CHAP or PAP)
+- **セッション**: plan-D の無通信タイマーは 1 時間。MQTT keepalive は契約値 30 秒
+  (contract.md §4 — ファームは `MQTT_KEEPALIVE` 30 で PubSubClient 既定 15 秒を上書き)
+  の traffic で常時維持される
+- **Beam (TLS 肩代わり)**: SIM のグループに **MQTT エントリポイント**を追加する
+  - エントリポイント URL: `beam.soracom.io:1883` (デバイスはここに平文接続)
+  - 転送先: **Standard / MQTTS** / `mqtt.takezou.com` / `62913`
+  - 認証情報: **パススルー ON** (デバイスの MQTT ユーザー car01 を dynsec へそのまま転送)
+  - プラットフォームバージョン: **201912** (LWT 利用可。keepalive は **0 または 5〜1200 秒**
+    を指定 — それ以外は NOT_AUTHORIZED で拒否。0 の場合は無通信 30 分で Beam が切断)
+  - QoS 1 (status) も 201912 では透過転送される
+- **課金**: Beam MQTT は往復で **2 リクエスト/メッセージ**課金 (PINGREQ は対象外)。
+  送信ポリシー (移動中 3 秒 / 停車 30 秒) がそのまま Beam リクエスト数の制御になる
+- **切り分け手順** (LTE 接続不良時):
+  1. Soracom コンソールで SIM ステータス確認 (`ready`=登録のみ / `active`=セッション確立)
+  2. モデム AT: `AT+CGREG?` / `AT+CEREG?` (網登録)、`AT+CGATT?` (PS アタッチ)。
+     `AT+CSQ` が `99,99` のまま、`AT+COPS=?` の全セルスキャンが数分後に ERROR で
+     戻る場合は**セル未捕捉** — 設定ではなく LTE アンテナ (u.FL) の外れ・設置場所を疑う
+     (2026-11-10 実機で確認)。なお `AT+CNMP` / `AT+CMNB` は NVRAM に persist するため、
+     診断後は目的のモードへ明示設定して戻すこと
+  3. Cat-M1 固定: `AT+CNMP=38` (LTE) + `AT+CMNB=1` (Cat-M1)。NB-IoT (`AT+CMNB=2`) は
+     plan-D 非対応
+  4. 到達確認: `ping pong.soracom.io` — 100.127.100.127 から応答があれば Soracom 網まで生存
+  5. Beam 設定の転送先ホスト/ポート確認と、ブローカー側 8883 (Let's Encrypt) の証明書有効性確認
+
+- **既知事象 (2026-11-10, T-SIM7080G / モデム FW R1951.07)**: GNSS を有効化
+  (`AT+CGNSPWR=1`) すると、**GPS 捕捉中 (acquisition) に LTE の TCP が確立後
+  約45〜47 秒で切断**される。GNSS ポーリング頻度・MQTT 経路 (Beam) に依存せず、
+  無通信でも発生 (アブレーション実験で切り分け済み)。屋外で GPS fix が確定すれば
+  捕捉が終わって安定する見込み (実車確認待ち)。ファームは
+  **PDP リフレッシュ → モデム電源リサイクルの 2 段階自己復帰**でこれを防ぐ。
+  恒久対策としてモデムファーム更新を検討 (§6)
+
 ## 6. 実装タスク
 
 - [ ] ファーム: 再接続の指数バックオフ実装（jitter 付き）
+- [ ] Phase 2-e: 実車フィールドテスト (LTE→Beam→Mosquitto→地図表示 E2E)
+- [ ] Phase 2-e: モデム内蔵 MQTT AT (AT+CMQTT*, TLS) への移行で Beam 非依存化
+- [ ] Phase 2-e: SIM7080G モデムファーム更新の検証 (GNSS+TCP 共存問題, R1951.07)
 - [ ] Phase 2-a: postgres バックアップ cron コンテナ追加 + ハートビート通知
 - [ ] Phase 2-a: `/api/health` エンドポイント
 - [ ] Phase 2-b: ingest のメモリバッファ実装

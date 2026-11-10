@@ -11,8 +11,10 @@
  *   - ピン: UART RX=4 TX=5 / PWRKEY=41 / DTR=42 / RI=3 / I2C SDA=15 SCL=7
  *
  * 接続経路:
- *   - CARPAL_USE_LTE 0 (既定): ESP32-S3 の WiFi で LAN の Mosquitto に接続 (ベンチ検証用)
- *   - CARPAL_USE_LTE 1: SIM7080G の LTE Cat-M 経由 (SIM到着後の実車検証用)
+ *   - CARPAL_USE_LTE 0: ESP32-S3 の WiFi で Mosquitto に接続 (ベンチ検証用)
+ *   - CARPAL_USE_LTE 1: SIM7080G の LTE Cat-M1 (SORACOM plan-D / ドコモ網) 経由。
+ *     MQTT は SORACOM Beam MQTT エントリポイント (beam.soracom.io:1883, 平文) を
+ *     経由し、Beam が MQTTS で公開ブローカーへ転送する (operations-design.md §5.2)
  *
  * 必要ライブラリ:
  *   - TinyGSM 0.12.0 (LilyGO fork — リポジトリ lib/TinyGSM を推奨)
@@ -29,6 +31,14 @@
 #if __has_include("secrets.h")
 #include "secrets.h"
 #define CARPAL_HAS_SECRETS 1
+// APN — 回線種別の公開設定値 (Soracom: soracom.io)。認証情報は secrets.h からのみ
+// 与える (AGENTS.md §1: 認証情報のソース内ハードコード禁止)
+#ifndef APN
+#define APN "soracom.io"
+#endif
+#if !defined(APN_USER) || !defined(APN_PASS)
+#error "secrets.h に APN_USER / APN_PASS を定義してください (SORACOM 公式値: sora / sora、認証 CHAP or PAP)"
+#endif
 #else
 #warning "secrets.h がありません。secrets.h.example をコピーして設定してください"
 #define CARPAL_HAS_SECRETS 0
@@ -36,12 +46,15 @@
 #define WIFI_PASS ""
 #define MQTT_HOST ""
 #define MQTT_PORT 1883
+#define MQTT_USE_TLS 0
 #define MQTT_USER ""
 #define MQTT_PASS ""
 #define CARPAL_TENANT_ID "default"
 #define CARPAL_DEVICE_ID "car01"
 #define CARPAL_DEVICE_SECRET "change-me"
 #define CARPAL_USE_LTE 0
+#define APN "soracom.io"
+// NOTE: APN_USER / APN_PASS (認証情報) はここに定義しない — secrets.h が必須
 #endif
 
 #if CARPAL_USE_LTE
@@ -56,6 +69,9 @@
 #include <TinyGsmClient.h>
 #endif
 
+// KeepAlive は契約値 30 秒 (docs/contract.md §4)。PubSubClient 既定 15 秒を上書きする。
+// SORACOM Beam MQTT エントリポイントの要件 (0 または 5〜1200 秒) 内
+#define MQTT_KEEPALIVE 30
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 
@@ -84,18 +100,41 @@ const float    MOVING_SPEED_KMH   = 5.0;
 // ===== 再接続バックオフ (operations-design §1.1) =====
 uint32_t backoffMs = 1000;
 uint32_t lastAttemptMs = 0;
+uint32_t mqttFailingSince = 0;   // MQTT が連続失敗し始めた時刻 (0 = 失敗なし)
 
 // GNSS fix 待ちの進捗を log トピックへ報告する間隔 (contract.md §3.1)
 const uint32_t GNSS_LOG_INTERVAL_MS = 15000;
 uint32_t gnssWaitStart = 0;
 
+// GNSS ポーリング間隔。1 秒ごとの getGPS (AT+CGNSINF) が LTE TCP と干渉して
+// 接続が ~47 秒で切れる実機事象があり、5 秒に緩めて回避 (2026-11-10)
+#ifndef GNSS_POLL_INTERVAL_MS
+#define GNSS_POLL_INTERVAL_MS 5000
+#endif
+
 // ===== クライアント =====
 #if CARPAL_USE_LTE
+// NOTE: TinyGSM の SIM7080 ドライバは TLS ソケット未対応。
+// LTE では SORACOM Beam MQTT エントリポイント (beam.soracom.io:1883) に平文で
+// 接続し、Beam が転送先ブローカー (MQTTS) との TLS を肩代わりする。
+// 平文区間は SORACOM 網内に閉じる (docs/operations-design.md §5.2)。
+// Beam 非依存の TLS はモデム内蔵 MQTT AT (AT+CMQTT*) への移行が別途必要 (Phase 2-e)。
+#if MQTT_USE_TLS
+#error "LTE と MQTT_USE_TLS=1 の組合せは未対応です (Beam MQTT エントリポイントは平文 1883 接続)。MQTT_USE_TLS を 0 にしてください"
+#endif
+#define SerialAT Serial1   // LilyGO 公式 example 準拠のモデム UART 別名
 TinyGsm       modem(SerialAT);
 TinyGsmClient netClient(modem);
 #else
 #include <WiFiClient.h>
+#if MQTT_USE_TLS
+#include <WiFiClientSecure.h>
+#include "isrgrootx1.h"
+// TLS 8883 (mqtt.takezou.com)。Let's Encrypt ルート CA (ISRG Root X1) で検証する
+WiFiClientSecure netClient;
+#else
 WiFiClient    netClient;
+#endif
 TinyGsm       modem(Serial1);
 #endif
 PubSubClient  mqtt(netClient);
@@ -163,8 +202,9 @@ bool modemPowerOn() {
   pinMode(BOARD_MODEM_DTR_PIN, OUTPUT);
   digitalWrite(BOARD_MODEM_DTR_PIN, LOW);
 
-  // autostart による起動を待つ (PMU が DC3 を投入済み)
+  // autostart による起動を待つ (PMU が DC3 を投入済み)。待ち時間は増加バックオフ
   int retry = 0;
+  uint32_t waitMs = 500;
   while (!modem.testAT(1000)) {
     Serial.print(".");
     mqtt.loop();                       // 起動中もMQTT keepaliveを維持
@@ -177,8 +217,9 @@ bool modemPowerOn() {
       delay(2000);
       digitalWrite(BOARD_MODEM_PWR_PIN, LOW);
       retry = 0;
+      waitMs = (waitMs < 4000) ? waitMs * 2 : 4000;   // 増加バックオフ (500ms→4s)
     }
-    delay(500);
+    delay(waitMs);
   }
   return true;
 }
@@ -211,10 +252,16 @@ bool mqttEnsureConnected() {
   if (ok) {
     Serial.println("[MQTT] connected");
     backoffMs = 1000;   // 成功でリセット
+    mqttFailingSince = 0;
     String online = String("{\"id\":\"") + CARPAL_DEVICE_ID + "\",\"online\":true}";
     mqtt.publish(TOPIC_STATUS.c_str(), online.c_str(), true);
   } else {
-    Serial.printf("[MQTT] failed state=%d\n", mqtt.state());
+    int st = mqtt.state();
+    Serial.printf("[MQTT] failed state=%d\n", st);
+    netClient.stop();   // 切断後の stale ソケットを閉じないと次の TCP 接続が連続失敗する
+    // PDP リフレッシュ判定の対象は TCP 系の失敗のみ (state<0)。
+    // 認証拒否 (state 4/5) は経路を触っても回復しないためカウントしない
+    if (st < 0 && mqttFailingSince == 0) mqttFailingSince = millis();
     backoffMs = (backoffMs < 60000) ? backoffMs * 2 : 60000;   // 1s→60s
   }
   return ok;
@@ -257,6 +304,7 @@ void publishLocation(double lat, double lng, float kmh, float brg, int usat,
 double lastLat = 0, lastLng = 0;
 bool   lastFixValid = false;
 uint32_t lastPublishMs = 0;
+bool   modemReady = false;   // GNSS 有効化済み (モデム電源リサイクル時に false へ戻す)
 
 // ============================================================
 // 診断ログ発報 (contract.md §3.1: carpal/{tenant}/{device}/log)
@@ -274,6 +322,17 @@ void publishLog(const char* level, const char* event, const String &msg) {
   mqtt.publish(TOPIC_LOG.c_str(), (const uint8_t*)buf, (unsigned int)n, false);
 }
 
+// ============================================================
+// 電波強度 (診断ログ用)。LTE: TinyGSM 0-31 (99=不明) / WiFi: dBm
+// ============================================================
+static inline int signalLevel() {
+#if CARPAL_USE_LTE
+  return modem.getSignalQuality();
+#else
+  return WiFi.RSSI();
+#endif
+}
+
 void setup() {
   Serial.begin(115200);
   // GNSS は UTC を返すため mktime の解釈を UTC 固定に
@@ -285,6 +344,10 @@ void setup() {
   TOPIC_STATUS = String("carpal/") + CARPAL_TENANT_ID + "/" + CARPAL_DEVICE_ID + "/status";
   TOPIC_LOG    = String("carpal/") + CARPAL_TENANT_ID + "/" + CARPAL_DEVICE_ID + "/log";
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
+#if !CARPAL_USE_LTE && MQTT_USE_TLS
+  // ルート CA を設定 (WiFi + TLS 8883 のみ。docs/backend-design.md §2.4)
+  netClient.setCACert(ISRG_ROOT_X1_PEM);
+#endif
   // NOTE: LilyGO lib の PubSubClient 2.7 には setKeepAlive/setSocketTimeout が無い
   // (デフォルト KeepAlive 15秒・タイムアウト 15秒を使用。LWT検出は15秒後)
 
@@ -298,6 +361,12 @@ void setup() {
   modemPowerOn();
   Serial.print("[MODEM] ");
   Serial.println(modem.getModemInfo());
+  // ドコモ網は GSM / NB-IoT を提供していないため、LTE Cat-M1 に固定する。
+  // 放置すると GSM/NB を含む全方式スキャンで登録が遅くなる (operations-design.md §5.2)
+  modem.sendAT("+CNMP=38");   // 38 = LTE のみ
+  modem.waitResponse();
+  modem.sendAT("+CMNB=1");    // 1 = Cat-M1 優先 (NB-IoT は plan-D 非対応)
+  modem.waitResponse();
 #else
   // ---- ベンチ: WiFi で LAN の Mosquitto へ。GPS用に PMU の BLDO2 も有効化 ----
   if (pmuInit()) {
@@ -326,8 +395,48 @@ void setup() {
 void loop() {
 #if CARPAL_USE_LTE
   if (!modem.isNetworkConnected()) {
-    Serial.println("[NET] reconnecting...");
-    modem.gprsConnect(APN, "", "");
+    // 登録完了を待ってからデータ接続する (連打すると登録が進まない場合がある)
+    Serial.println("[NET] waiting for LTE registration (Cat-M1)...");
+    if (modem.waitForNetwork(60000L) && modem.isNetworkConnected()) {
+      Serial.printf("[NET] registered, connecting data (APN=%s)...\n", APN);
+      if (!modem.gprsConnect(APN, APN_USER, APN_PASS)) {
+        Serial.println("[NET] gprsConnect FAILED");
+      }
+    } else {
+      Serial.printf("[NET] registration timeout (signal=%d)\n", modem.getSignalQuality());
+    }
+  } else if (mqttFailingSince != 0 && millis() - mqttFailingSince > 120000UL) {
+    // 登録は生きているのに TCP が通らない → PDP (データ経路) だけ死んでいる。
+    // gprsConnect をやり直して経路を作り直す (2026-11-10 実機で発生したパターン)
+    Serial.println("[NET] registered but TCP unreachable — PDP refresh");
+    modem.gprsDisconnect();
+    bool ok = modem.gprsConnect(APN, APN_USER, APN_PASS);
+    if (ok) {
+      Serial.println("[NET] PDP re-established");
+    } else {
+      // 段階2: モデム電源をリサイクルしてから再登録・再接続
+      Serial.println("[NET] PDP re-establish FAILED — modem power cycle");
+      modem.gprsDisconnect();
+      PMU.disableDC3();
+      delay(1500);
+      PMU.enableDC3();
+      delay(500);
+      modemPowerOn();
+      Serial.print("[MODEM] ");
+      Serial.println(modem.getModemInfo());
+      modem.sendAT("+CNMP=38");
+      modem.waitResponse();
+      modem.sendAT("+CMNB=1");
+      modem.waitResponse();
+      modemReady = false;   // モデム再起動後に GNSS を有効化し直す
+      Serial.println("[NET] re-registering after power cycle...");
+      if (modem.waitForNetwork(60000L) && modem.isNetworkConnected()) {
+        modem.gprsConnect(APN, APN_USER, APN_PASS);
+      }
+    }
+    mqttFailingSince = millis();   // 次の判定まで再び待つ
+    backoffMs = 1000;              // 経路更新後はすぐ試す
+    lastAttemptMs = 0;
   }
 #else
   // WiFi 再接続: 接続試行中に reconnect() を連打すると失敗するため10秒クールダウン
@@ -346,10 +455,12 @@ void loop() {
   }
 
   // ---- GNSS 取得 (TinyGSM getGPS: 13引数・速度はノット) ----
+  // NOTE: CARPAL_SKIP_GNSS=1 でビルドすると GNSS を止めて MQTT 接続安定性を
+  //       単独検証できる (2026-11-10: GNSS 待ち開始 ~47s で切断が再現した切り分け用)
+#ifndef CARPAL_SKIP_GNSS
   float lat2 = 0, lon2 = 0, speed2 = 0, alt2 = 0, accuracy2 = 0;
   int vsat2 = 0, usat2 = 0, y2 = 0, mo2 = 0, d2 = 0, h2 = 0, mi2 = 0, s2 = 0;
 
-  static bool modemReady = false;
   if (!modemReady) {
     Serial.println("[MODEM] power-on for GNSS...");
     modemPowerOn();
@@ -359,13 +470,22 @@ void loop() {
       Serial.println("[GNSS] enableGPS failed — retry in 30s");
       delay(30000);
       return;
-    }
-    // 測位高速化: GPS + BEIDOU 構成 (公式 MinimalModemGPSExample の ADVANCED_GPS_CONFIG 準拠)
+    }    // 測位高速化: GPS + BEIDOU 構成 (公式 MinimalModemGPSExample の ADVANCED_GPS_CONFIG 準拠)
     modem.sendAT("+CGNSMOD=1,0,1,0,0");
     modem.waitResponse();
     Serial.println("[GNSS] enabled (GPS+BEIDOU), waiting for fix...");
     modemReady = true;
   }
+
+  // getGPS の発熱的な AT 連打を抑える: GNSS_POLL_INTERVAL_MS ごとにのみ測位を読む
+  // (間で mqtt.loop() を回して keepalive を維持)
+  static uint32_t lastGpsPoll = 0;
+  if (millis() - lastGpsPoll < GNSS_POLL_INTERVAL_MS) {
+    mqtt.loop();
+    delay(200);
+    return;
+  }
+  lastGpsPoll = millis();
 
   bool have = modem.getGPS(&lat2, &lon2, &speed2, &alt2, &vsat2, &usat2,
                            &accuracy2, &y2, &mo2, &d2, &h2, &mi2, &s2);
@@ -378,8 +498,8 @@ void loop() {
       uint32_t elapsed = (millis() - gnssWaitStart) / 1000;
       char m[112];
       snprintf(m, sizeof(m),
-               "elapsed=%lus rssi=%d dc3=%u/%umV bldo2=%u",
-               (unsigned long)elapsed, (int)WiFi.RSSI(),
+               "elapsed=%lus sats=%d/%d rssi=%d dc3=%u/%umV bldo2=%u",
+               (unsigned long)elapsed, usat2, vsat2, signalLevel(),
                (unsigned)PMU.isEnableDC3(), (unsigned)PMU.getDC3Voltage(),
                (unsigned)PMU.isEnableBLDO2());
       publishLog("INFO", "GNSS_WAITING", m);
@@ -412,6 +532,8 @@ void loop() {
     lastPublishMs = millis();
     lastLat = lat2; lastLng = lon2; lastFixValid = true;
   }
+
+#endif   // CARPAL_SKIP_GNSS
 
   mqtt.loop();
   delay(500);

@@ -1,0 +1,47 @@
+# carpal 公開エントリ (Cloudflare Tunnel のオリジンとして動作、TLS は Cloudflare エッジで終端)
+# パス設計: docs/backend-design.md §1
+#
+# セキュリティ注記 (Phase 3 で認証実装まで):
+# - /api/history /api/logs: ingest 側に認証・テナントフィルタ未実装のため
+#   LAN 以外からは 403 応答 (Phase 3 で JWT 認証を実装するまで公開しない)
+# - /config.local.js: webuser 共通パスワードを含むため LAN 以外は 403
+# - 暫定緩和として Cloudflare Access によるホスト単位の保護を推奨
+:80 {
+	root * /srv/web
+	encode gzip
+
+	# LAN 判定: トンネル経由のリクエストは cloudflared (docker 網 172.x) から着信する
+	@notlan not remote_ip 192.168.0.0/16 127.0.0.1
+
+	# MQTT over WebSockets (ブラウザ) — パスはそのまま Mosquitto ws へ
+	# NOTE: /mqtt* のプレフィックス一致だと /mqtt.js (静的ファイル) まで転送されるため
+	# 完全一致 /mqtt と /mqtt/* のみに限定する
+	handle /mqtt {
+		reverse_proxy host.docker.internal:9001
+	}
+	handle /mqtt/* {
+		reverse_proxy host.docker.internal:9001
+	}
+	# 履歴・診断ログ API (ingest :3000) — 認証実装まで LAN のみ
+	handle /api/history* {
+		respond @notlan 403
+		reverse_proxy host.docker.internal:3000
+	}
+	handle /api/logs* {
+		respond @notlan 403
+		reverse_proxy host.docker.internal:3000
+	}
+	# メンバー/テナント/デバイス API (Fastify :3001)
+	handle /api/* {
+		reverse_proxy host.docker.internal:3001
+	}
+	# webuser 共通パスワード入りのローカル設定 — LAN 以外には配信しない
+	handle /config.local.js {
+		respond @notlan 403
+		file_server
+	}
+	# web 静的配信 (web/index.html, mqtt.js, api.js ...)
+	handle {
+		file_server
+	}
+}

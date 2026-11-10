@@ -10,6 +10,7 @@ services:
       - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - ./passwd:/mosquitto/config/passwd:ro
       - ./acl_file:/mosquitto/config/acl_file:ro
+      - ./conf.d:/mosquitto/conf.d:ro   # 環境固有リスナー (bench は空 / 本番は override で TLS 8883 を注入)
       - mosquitto-data:/mosquitto/data
 
 volumes:

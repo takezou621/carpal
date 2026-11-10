@@ -14,10 +14,12 @@
 
 // 接続先・認証情報はハードコードしない (監査 C-2 対応)。
 // window.CARPAL_MQTT_URL / CARPAL_MQTT_USER / CARPAL_MQTT_PASS / CARPAL_TENANT_ID を
-// index.html 側で設定する。JWT 認証 (Phase 2) 導入まで、この画面を公開ネットワークに出さないこと。
+// index.html 側で設定する。
+// https 配信時 (Caddy / Cloudflare Tunnel) は同一オリジンの /mqtt 経由で WSS 接続する。
 const MQTT_URL = window.CARPAL_MQTT_URL
-  || (location.protocol === 'https:' ? 'wss://' + location.hostname + ':9001'
-                                     : 'ws://' + location.hostname + ':9001');
+  || (location.protocol === 'https:'
+        ? `wss://${location.host}/mqtt`            // TLS終端 (Caddy / CF Tunnel) 経由
+        : `ws://${location.hostname}:9001`);       // LANベンチ: Mosquitto 直結
 const MQTT_OPTIONS = {
   username: window.CARPAL_MQTT_USER || 'webuser',
   password: window.CARPAL_MQTT_PASS || '',  // 未設定なら Mosquitto 側で認証拒否される
