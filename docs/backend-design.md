@@ -60,6 +60,13 @@ ON CONFLICT (device_id, recorded_at) DO UPDATE
 
 - status 購読も行い、`devices.last_seen_at` と location 受信のたびに更新（60秒以上経過時のみ UPDATE で書込削減）
 
+### 2.4 Mosquitto 8883 TLS / 外部公開 (2026-11-09/10 追加)
+
+- **WSS (ブラウザ)**: Cloudflare Tunnel (`car.takezou.com`) → caddy :80 (`/mqtt`) → mosquitto :9001。TLS は Cloudflare エッジで終端
+- **8883 TLS (屋外デバイス)**: `docker/mosquitto/conf.d/tls-8883.conf` (本番のみ配置、証明書は Let's Encrypt DNS-01、`carpal-cert-renew.timer` が日次更新して mosquitto を再起動)。外部からは `mqtt.takezou.com:62913` (MAP-E 割当ポート + DNAT) 経由
+- **LTE デバイス (2026-11-10)**: TinyGSM が TLS 未対応のため SORACOM Beam の MQTT エントリポイント経由 (`beam.soracom.io:1883` → MQTTS 転送)。設定詳細は `docs/operations-design.md` §5.2
+- **認証**: 全リスナー共通で dynsec 動的認証 (`backend/api/mqttProvision.mjs` がプロビジョニング)
+
 ## 3. API 設計（Fastify）
 
 ### 3.1 共通仕様
@@ -81,9 +88,13 @@ ON CONFLICT (device_id, recorded_at) DO UPDATE
 | `POST /api/tenants/{tid}/devices` | owner権限必須。`consent_confirmed=true` 必須（legal-compliance §2.2）。secret は32バイトランダム→**平文はこの応答1回のみ**、DB は argon2id hash |
 | `POST /api/tenants/{tid}/devices/{id}/rotate` | secret 再発行（previous を2本持ち期間24h）。監査記録 |
 | `GET /api/tenants/{tid}/locations` | `from/to` 必須（最大7日）。`LIMIT 10000` 上限。CSV/JSON 切替 |
-| `GET /api/tenants/{tid}/usage` | devices COUNT, locations COUNT(当月パーティション), pg_total_relation_size |
+| `GET /api/tenants/{tid}/usage` | devices COUNT, locations COUNT (単一テーブル — 月次パーティションは旧案、冒頭の実装状況注記参照), pg_total_relation_size |
 
-### 3.3 go-auth 連携（Phase 2-c）
+### 3.3 go-auth 連携（**旧案** — 実装は dynsec+mosquitto_ctrl 方式。冒頭の実装状況注記参照)
+
+> 本節は初期設計時の go-auth 連携案。実装では **Mosquitto dynsec + mosquitto_ctrl
+> を API から実行する方式**を採用した (`backend/api/mqttProvision.mjs`)。以下は
+> 将来的な移行オプションとして残す。
 
 - `mosquitto-go-auth` の HTTP モードで API 側に内部エンドポイントを追加:
   - `POST /internal/mqtt/auth`: username=device_id → devices 照合（active/previous 両ハッシュ試行）
@@ -122,4 +133,4 @@ ON CONFLICT (device_id, recorded_at) DO UPDATE
 - [ ] ingest 実装（購読・バリデーション・バッチUpsert・メモリキュー）
 - [ ] api 実装（auth → devices → locations → usage の順）
 - [ ] caddy 追加（TLS 終端・ルーティング）
-- [ ] go-auth 導入（Phase 2-c）＋テナント分離テストのCI組込
+- [x] MQTT 動的認証 (go-auth 旧案 → **dynsec+mosquitto_ctrl** で実装済み) ＋テナント分離テストの CI 組込 (2026-11-10: e2e ジョブで publish/subscribe 権限・suspend/resume を検証)

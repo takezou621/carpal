@@ -1,6 +1,11 @@
 # carpal 用 Cloudflare Tunnel (ローカル管理) の ingress 設定
-# 認証情報ファイル cloudflared/carpal.json は `cloudflared tunnel create carpal` で生成
-# (トンネル秘密鍵を含むため gitignore 対象 — コミット禁止)
+# 認証情報ファイル cloudflared/carpal.json は gitignore 対象 (トンネル秘密鍵を含む — コミット禁止)
+# 配置手順:
+#   1. cloudflared tunnel login
+#   2. cloudflared tunnel create carpal
+#      → ~/.cloudflared/<UUID>.json が生成される (UUID 名!)
+#   3. cp ~/.cloudflared/<UUID>.json docker/caddy/cloudflared/carpal.json
+#   4. docker compose up -d
 tunnel: carpal
 credentials-file: /etc/cloudflared/carpal.json
 

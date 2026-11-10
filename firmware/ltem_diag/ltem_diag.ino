@@ -53,6 +53,7 @@ bool modemPowerOn() {
   pinMode(BOARD_MODEM_DTR_PIN, OUTPUT);
   digitalWrite(BOARD_MODEM_DTR_PIN, LOW);
   int retry = 0;
+  uint32_t waitMs = 500;
   while (!modem.testAT(1000)) {
     Serial.print(".");
     if (retry++ > 8) {
@@ -61,8 +62,9 @@ bool modemPowerOn() {
       delay(2000);
       digitalWrite(BOARD_MODEM_PWR_PIN, LOW);
       retry = 0;
+      waitMs = (waitMs < 4000) ? waitMs * 2 : 4000;   // 増加バックオフ
     }
-    delay(500);
+    delay(waitMs);
   }
   return true;
 }

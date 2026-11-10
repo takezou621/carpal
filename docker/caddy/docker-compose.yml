@@ -3,11 +3,14 @@
 # - cloudflared が car.takezou.com を Caddy へ転送 (トンネル認証情報は gitignore)
 services:
   caddy:
-    image: caddy:2-alpine
+    # NOTE: image タグは pin (moving tag だと pull 時に無変更更新が起きる)
+    image: caddy:2.11.9-alpine
     container_name: carpal-caddy
     restart: unless-stopped
     ports:
-      - "80:80"
+      # cloudflared は compose ネットワーク経由で carpal-caddy:80 に到達するため
+      # ホスト公開は不要 (LAN からは tunnel URL を使用)
+      - "127.0.0.1:80:80"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ../../web:/srv/web:ro
@@ -17,7 +20,7 @@ services:
       - "host.docker.internal:host-gateway"
 
   cloudflared:
-    image: cloudflare/cloudflared:latest
+    image: cloudflare/cloudflared:2026.10.7
     container_name: carpal-cloudflared
     restart: unless-stopped
     command: ["tunnel", "--config", "/etc/cloudflared/config.yml", "run", "carpal"]

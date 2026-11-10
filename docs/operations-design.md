@@ -113,6 +113,12 @@ mosquitto_sub -t 'carpal/#' -v -C 3        # メッセージ流通確認
   (`isrgrootx1.h`)。LTE (TinyGSM) は TLS 未対応のため **Soracom Beam に TLS を肩代わり**
   (§5.2)。Beam 非依存の TLS はモデム内蔵 MQTT AT (AT+CMQTT*, SSL対応) への移行が
   Phase 2-e の残作業
+- **履歴/ログ API (`/api/history` `/api/logs`)**: ingest 側に認証・テナントフィルタが
+  未実装のため、Caddy 経由 (外部) は **403 応答で遮断** (Phase 3 で JWT 認証を実装する
+  まで公開しない)。LAN では `http://<broker-host>:3000` 直接入力で利用可
+- **web/config.local.js**: webuser 共通パスワードを含むため**公開配信は不可** (Caddy で
+  LAN 以外は 403 応答)。テナント単位 MQTT 認証は Phase 3 課題。暫定緩和として
+  Cloudflare Access によるホスト単位の保護を推奨
 
 ### 5.2 SIM / SORACOM 運用 (plan-D + Beam) — 2026-11-10 整備
 
@@ -121,14 +127,15 @@ mosquitto_sub -t 'carpal/#' -v -C 3        # メッセージ流通確認
   で利用可能。NB-IoT は非対応 (§5.2 切り分け手順 3 参照)
 - **APN**: SORACOM 公式設定 — APN `soracom.io` / ユーザー名 `sora` / パスワード `sora`
   (認証タイプ CHAP or PAP)
-- **セッション**: plan-D の無通信タイマーは 1 時間。MQTT keepalive (PubSubClient 既定
-  15秒) の traffic で常時維持される
+- **セッション**: plan-D の無通信タイマーは 1 時間。MQTT keepalive は契約値 30 秒
+  (contract.md §4 — ファームは `MQTT_KEEPALIVE` 30 で PubSubClient 既定 15 秒を上書き)
+  の traffic で常時維持される
 - **Beam (TLS 肩代わり)**: SIM のグループに **MQTT エントリポイント**を追加する
   - エントリポイント URL: `beam.soracom.io:1883` (デバイスはここに平文接続)
   - 転送先: **Standard / MQTTS** / `mqtt.takezou.com` / `62913`
   - 認証情報: **パススルー ON** (デバイスの MQTT ユーザー car01 を dynsec へそのまま転送)
-  - プラットフォームバージョン: **201912** (LWT 利用可。keepalive は 5〜1200 秒必須、
-    0 または範囲外だと NOT_AUTHORIZED で拒否される)
+  - プラットフォームバージョン: **201912** (LWT 利用可。keepalive は **0 または 5〜1200 秒**
+    を指定 — それ以外は NOT_AUTHORIZED で拒否。0 の場合は無通信 30 分で Beam が切断)
   - QoS 1 (status) も 201912 では透過転送される
 - **課金**: Beam MQTT は往復で **2 リクエスト/メッセージ**課金 (PINGREQ は対象外)。
   送信ポリシー (移動中 3 秒 / 停車 30 秒) がそのまま Beam リクエスト数の制御になる
@@ -146,10 +153,10 @@ mosquitto_sub -t 'carpal/#' -v -C 3        # メッセージ流通確認
 
 - **既知事象 (2026-11-10, T-SIM7080G / モデム FW R1951.07)**: GNSS を有効化
   (`AT+CGNSPWR=1`) すると、**GPS 捕捉中 (acquisition) に LTE の TCP が確立後
-  約45〜47 秒で切断**される。GNSS ポーリング頻縞・MQTT 経路 (Beam) 非依存で、
+  約45〜47 秒で切断**される。GNSS ポーリング頻度・MQTT 経路 (Beam) に依存せず、
   無通信でも発生 (アブレーション実験で切り分け済み)。屋外で GPS fix が確定すれば
   捕捉が終わって安定する見込み (実車確認待ち)。ファームは
-  **PDP リフレッシュ → モデム電源リサイクルの 2 段階自己復帰**でこれを兜背する。
+  **PDP リフレッシュ → モデム電源リサイクルの 2 段階自己復帰**でこれを防ぐ。
   恒久対策としてモデムファーム更新を検討 (§6)
 
 ## 6. 実装タスク

@@ -37,7 +37,7 @@ LILYGO T-SIM7080-S3 を用いたリアルタイム車両追跡システム（最
 1. **段階的アーキテクチャ**: Phase 1 は Mosquitto が中継を兼ねる最小構成。Phase 2 でテナント管理・履歴保存のため API + ingest + PostgreSQL を追加（`docs/multi-tenant-design.md` §4）。
 2. **関心の分離**： デバイスは「測位して流すだけ」、表示はブラウザが担う。変換・集計は置かない（YAGNI）。
 3. **契約駆動**： トピック・JSONスキーマ・時刻仕様は `docs/contract.md` に一元化。実デバイスとシミュレータは完全置換可能。
-4. **テナント分離は ACL で成立させる**: Phase 1 から静的 ACL、Phase 2 で go-auth による動的 ACL へ（`docs/multi-tenant-design.md` §3）。
+4. **テナント分離は ACL で成立させる**: Phase 1 は静的 ACL、Phase 2 で **dynsec による動的 ACL を実装済み** (2026-11-06、`docs/multi-tenant-design.md` §3)。
 
 ## 2. コンポーネント設計
 
@@ -60,9 +60,9 @@ LILYGO T-SIM7080-S3 を用いたリアルタイム車両追跡システム（最
 
 | 項目 | 設計 |
 |---|---|
-| リスナー | TCP 1883 (デバイス用) / WebSockets 9001 (ブラウザ用) を分離 |
-| 認証 | `password_file` によるユーザー認証（Mosquitto 2.x は匿名拒否がデフォルト）。**username = device_id**（car01 など。共用ユーザーは使わない）＋ `webuser`。Phase 2 で go-auth による動的認証へ移行 |
-| TLS | **現状**: LAN 内は平文で許容。**外部公開実装済み (2026-11-09)**: ブラウザは WSS (Cloudflare Tunnel → Caddy → 9001)。デバイスは Mosquitto 8883 TLS リスナー (`conf.d/tls-8883.conf`, Let's Encrypt DNS-01 更新は `carpal-cert-renew.timer`) を `mqtt.takezou.com:62913` (DDNS A レコード + MAP-E 割当範囲内ポート、ルーター DNAT) 経由で公開。**LTE デバイス (2026-11-10)**: TinyGSM は TLS 未対応のため、SIM グループの Beam MQTT エントリポイント (転送先 `mqtts://mqtt.takezou.com:62913`) で TLS を肩代わり。デバイス→Beam の平文区間は Soracom 網内に閉じる (operations-design.md §5.2) |
+| リスナー | TCP 1883 (デバイス用) / WebSockets 9001 (ブラウザ用) / TLS 8883 (屋外デバイス用。本番 `conf.d/tls-8883.conf`、外部からは `mqtt.takezou.com:62913` 経由) を分離 |
+| 認証 | `password_file` によるユーザー認証（Mosquitto 2.x は匿名拒否がデフォルト）。**username = device_id**（car01 など。共用ユーザーは使わない）＋ `webuser`。動的認証は **dynsec+mosquitto_ctrl 方式を実装済み** (2026-11-06、`backend/api/mqttProvision.mjs` — API 登録→即 MQTT 利用可) |
+| TLS | **現状**: LAN 内は平文で許容。**外部公開実装済み (2026-11-09)**: ブラウザは WSS (Cloudflare Tunnel → Caddy → 9001)。デバイスは Mosquitto 8883 TLS リスナー (`conf.d/tls-8883.conf`, Let's Encrypt DNS-01 更新は `carpal-cert-renew.timer`) を `mqtt.takezou.com:62913` (DDNS A レコード + MAP-E 割当範囲内ポート、ルーター DNAT) 経由で公開。**LTE デバイス (2026-11-10)**: TinyGSM は TLS 未対応のため、SIM グループの Beam MQTT エントリポイント (転送先 `mqtts://mqtt.takezou.com:62913`) で TLS を肩代わり。デバイス→Beam の平文区間は Soracom 網内に閉じるが、**この区間では MQTT ユーザー名/パスワードが平文で流れる** (Soracom 網外からは到達不可。恒久対策はモデム内蔵 MQTT AT `AT+CMQTT*` SSL への移行 — operations-design.md §6) |
 | ACL | `acl_file` で**導入済み**: デバイス= `carpal/#/location`,`/status` へ publish のみ / webuser= `carpal/+/+/location`,`/status` を subscribe のみ（`docker/mosquitto/acl_file`） |
 | 永続化 | Retain メッセージ用に volume マウントで persistence 有効 |
 
@@ -154,14 +154,14 @@ mqtt.js が 3秒間隔で自動再接続 → Retain された status を受信�
 
 ## 5. セキュリティ設計
 
-| 層 | 現状 (LAN) | 将来 (外部公開) |
+| 層 | 現状 | 外部公開 (実装済み 2026-11-09/10) |
 |---|---|---|
-| 通信 | 平文 MQTT / ws | WSS (Caddy で TLS 終端) / mTLS or TLS 8883 |
-| 認証 | ユーザー/パス（username=device_id）＋ **ACL 導入済み** | go-auth で動的 ACL（JWT・テナント分離） |
-| デバイス偽装 | ACL で publish は location/status のみに制限 | デバイス毎の専用ユーザー＋自トピック限定 ACL＋`id≡topic` 検証 |
-| Web 公開 | なし（LAN限定） | リバースプロキシ＋JWT認証（mqtt.js への資格情報ハードコード禁止済み） |
+| 通信 | 平文 MQTT / ws (LAN) | WSS (Cloudflare Tunnel → Caddy → 9001) 実装済み / 8883 TLS 実装済み。LTE は Beam 経由 (Soracom 網内は平文 — 上記 TLS 行参照) |
+| 認証 | ユーザー/パス (username=device_id) ＋ dynsec 動的 ACL 実装済み | 同左 (Beam 経由でも同一認証。Phase 3 でテナント単位認証へ) |
+| デバイス偽装 | ACL で publish 制限＋ `id≡topic` 検証 | デバイス毎の dynsec ユーザー＋自トピック限定 ACL (CI の e2e で検証) |
+| Web 公開 | LAN 限定 | car.takezou.com 公開済み (CF Tunnel)。**履歴/ログ API (`/api/history` `/api/logs`) は認証未実装のため Caddy で 403 応答** (Phase 3 で JWT 認証を実装するまで LAN のみ)。`config.local.js` (webuser 共通パスワード) も LAN 以外へは配信しない。暫定緩和として Cloudflare Access の適用を推奨 |
 
-混在コンテンツ注意: https ページから `ws://` はブラウザがブロック。外部公開時は必ず WSS。
+混在コンテンツ注意: https ページから `ws://` はブラウザがブロック。外部公開時は必ず WSS (実装済み)。
 
 ## 6. 保守性・拡張性
 
@@ -209,7 +209,7 @@ carpal/
 | 2-c | テナント/デバイス管理 API・JWT 認証・MQTT動的認証 | ✅ コア完了 (2026-11-06: Fastify+JWT+監査ログ+secret発行/ローテーション+suspend と **dynsec 動的MQTT認証** (API登録→即MQTT利用可) を実装、E2E 18/18 + プロビジョニング9/9 PASS。メンバー招待・RS256移行は後続) |
 | 2-d | フロント UI (ログイン・テナントスイッチャー・メンバー管理・履歴表示) | ✅ コア完了 (2026-11-07: ログイン+デバイス管理+メンバー管理+テナント切替+履歴表示+自動センタリング、ヘッドレスE2E PASS。残: モバイル最適化・ダークモード) |
 | 2-e | ESP32 実機検証 | 🔄 進行中 (2026-11-06: PMUアドレス異常 (0x5A→0x34) を解明・対応し、WiFi→LAN Mosquitto接続・モデムAT応答・GNSS測位開始まで確認。GPS fix は屋外で確認。2026-11-10: Soracom plan-D (D-500MB, ドコモ網 Cat.M1) SIM を装着し LTE 実装完了 (Beam MQTT エントリポイント経由・APN soracom.io・登録待ち+PDPリフレッシュ+モデム電源リサイクルの自己復帰込み)。Beam→Mosquitto 接続は実機で複数回確認。既知事象: GNSS 捕捉中に LTE TCP が約46秒で切断 (operations-design.md §5.2) — GPS fix 後の安定性は実車確認待ち) |
-| 3 | 外部公開 (WSS)、Admin コンソール、OTA、SaaS 化 (課金) | 未着手 |
+| 3 | Admin コンソール、OTA、SaaS 化 (課金)、履歴/ログ API の認証付き公開、テナント単位 MQTT 認証 | 未着手 (外部公開 WSS / 8883 TLS は 2026-11-09/10 に先行実装。履歴/ログは Caddy で 403 遮断中) |
 
 ### リスクと対処
 

@@ -31,16 +31,13 @@
 #if __has_include("secrets.h")
 #include "secrets.h"
 #define CARPAL_HAS_SECRETS 1
-// APN 認証 — SORACOM 公式 APN 設定 (APN soracom.io / sora / sora、CHAP or PAP)。
-// secrets.h に未定義のときの既定値 (旧 secrets.h でも LTE モードがビルド可能になる)
+// APN — 回線種別の公開設定値 (Soracom: soracom.io)。認証情報は secrets.h からのみ
+// 与える (AGENTS.md §1: 認証情報のソース内ハードコード禁止)
 #ifndef APN
 #define APN "soracom.io"
 #endif
-#ifndef APN_USER
-#define APN_USER "sora"
-#endif
-#ifndef APN_PASS
-#define APN_PASS "sora"
+#if !defined(APN_USER) || !defined(APN_PASS)
+#error "secrets.h に APN_USER / APN_PASS を定義してください (SORACOM 公式値: sora / sora、認証 CHAP or PAP)"
 #endif
 #else
 #warning "secrets.h がありません。secrets.h.example をコピーして設定してください"
@@ -57,8 +54,7 @@
 #define CARPAL_DEVICE_SECRET "change-me"
 #define CARPAL_USE_LTE 0
 #define APN "soracom.io"
-#define APN_USER "sora"
-#define APN_PASS "sora"
+// NOTE: APN_USER / APN_PASS (認証情報) はここに定義しない — secrets.h が必須
 #endif
 
 #if CARPAL_USE_LTE
@@ -73,6 +69,9 @@
 #include <TinyGsmClient.h>
 #endif
 
+// KeepAlive は契約値 30 秒 (docs/contract.md §4)。PubSubClient 既定 15 秒を上書きする。
+// SORACOM Beam MQTT エントリポイントの要件 (0 または 5〜1200 秒) 内
+#define MQTT_KEEPALIVE 30
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 
@@ -121,7 +120,7 @@ uint32_t gnssWaitStart = 0;
 // 平文区間は SORACOM 網内に閉じる (docs/operations-design.md §5.2)。
 // Beam 非依存の TLS はモデム内蔵 MQTT AT (AT+CMQTT*) への移行が別途必要 (Phase 2-e)。
 #if MQTT_USE_TLS
-#warning "LTE + MQTT_USE_TLS は未対応です (Beam MQTT エントリポイントは平文 1883 で接続します)"
+#error "LTE と MQTT_USE_TLS=1 の組合せは未対応です (Beam MQTT エントリポイントは平文 1883 接続)。MQTT_USE_TLS を 0 にしてください"
 #endif
 #define SerialAT Serial1   // LilyGO 公式 example 準拠のモデム UART 別名
 TinyGsm       modem(SerialAT);
@@ -203,8 +202,9 @@ bool modemPowerOn() {
   pinMode(BOARD_MODEM_DTR_PIN, OUTPUT);
   digitalWrite(BOARD_MODEM_DTR_PIN, LOW);
 
-  // autostart による起動を待つ (PMU が DC3 を投入済み)
+  // autostart による起動を待つ (PMU が DC3 を投入済み)。待ち時間は増加バックオフ
   int retry = 0;
+  uint32_t waitMs = 500;
   while (!modem.testAT(1000)) {
     Serial.print(".");
     mqtt.loop();                       // 起動中もMQTT keepaliveを維持
@@ -217,8 +217,9 @@ bool modemPowerOn() {
       delay(2000);
       digitalWrite(BOARD_MODEM_PWR_PIN, LOW);
       retry = 0;
+      waitMs = (waitMs < 4000) ? waitMs * 2 : 4000;   // 増加バックオフ (500ms→4s)
     }
-    delay(500);
+    delay(waitMs);
   }
   return true;
 }
@@ -255,9 +256,12 @@ bool mqttEnsureConnected() {
     String online = String("{\"id\":\"") + CARPAL_DEVICE_ID + "\",\"online\":true}";
     mqtt.publish(TOPIC_STATUS.c_str(), online.c_str(), true);
   } else {
-    Serial.printf("[MQTT] failed state=%d\n", mqtt.state());
+    int st = mqtt.state();
+    Serial.printf("[MQTT] failed state=%d\n", st);
     netClient.stop();   // 切断後の stale ソケットを閉じないと次の TCP 接続が連続失敗する
-    if (mqttFailingSince == 0) mqttFailingSince = millis();
+    // PDP リフレッシュ判定の対象は TCP 系の失敗のみ (state<0)。
+    // 認証拒否 (state 4/5) は経路を触っても回復しないためカウントしない
+    if (st < 0 && mqttFailingSince == 0) mqttFailingSince = millis();
     backoffMs = (backoffMs < 60000) ? backoffMs * 2 : 60000;   // 1s→60s
   }
   return ok;
@@ -341,7 +345,7 @@ void setup() {
   TOPIC_LOG    = String("carpal/") + CARPAL_TENANT_ID + "/" + CARPAL_DEVICE_ID + "/log";
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
 #if !CARPAL_USE_LTE && MQTT_USE_TLS
-  // ルート CA を設定 (WiFi + TLS 8883 のみ。docs/backend-design.md §2.2)
+  // ルート CA を設定 (WiFi + TLS 8883 のみ。docs/backend-design.md §2.4)
   netClient.setCACert(ISRG_ROOT_X1_PEM);
 #endif
   // NOTE: LilyGO lib の PubSubClient 2.7 には setKeepAlive/setSocketTimeout が無い
